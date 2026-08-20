@@ -18,23 +18,43 @@ if "GEMINI_API_KEY" in st.secrets:
 @st.cache_data(ttl=86400)
 def get_tw_stock_info():
     stock_dict = {}
+    # 加入瀏覽器偽裝，降低被台灣政府 API 阻擋的機率
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+    }
     try:
-        res_twse = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL")
+        res_twse = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", headers=headers, timeout=15)
         if res_twse.status_code == 200:
             for item in res_twse.json():
                 if len(item['Code']) == 4:
                     stock_dict[item['Code'] + '.TW'] = item['Name']
         
-        res_tpex = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes")
+        res_tpex = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", headers=headers, timeout=15)
         if res_tpex.status_code == 200:
             for item in res_tpex.json():
                 if len(item['SecuritiesCompanyCode']) == 4:
                     stock_dict[item['SecuritiesCompanyCode'] + '.TWO'] = item['CompanyName']
+                    
     except Exception:
-        stock_dict = {'2330.TW': '台積電', '2317.TW': '鴻海', '2891.TW': '中信金'}
+        pass # 如果失敗，將在下方回退到備用名單
+
+    # 備用機制：如果證交所 API 封鎖雲端 IP，至少提供台股前 50 大權值股，確保系統仍有優質標的可篩
+    if len(stock_dict) < 100:
+        stock_dict = {
+            '2330.TW': '台積電', '2317.TW': '鴻海', '2454.TW': '聯發科', '2382.TW': '廣達', 
+            '2308.TW': '台達電', '2881.TW': '富邦金', '2891.TW': '中信金', '2412.TW': '中華電', 
+            '2882.TW': '國泰金', '2886.TW': '兆豐金', '3231.TW': '緯創', '3711.TW': '日月光', 
+            '2884.TW': '玉山金', '1216.TW': '統一', '2885.TW': '元大金', '2002.TW': '中鋼', 
+            '2892.TW': '第一金', '2603.TW': '長榮', '2303.TW': '聯電', '2356.TW': '英業達',
+            '3045.TW': '台灣大', '2345.TW': '智邦', '2880.TW': '華南金', '2883.TW': '開發金',
+            '2887.TW': '台新金', '2395.TW': '研華', '5880.TW': '合庫金', '2912.TW': '統一超',
+            '2207.TW': '和泰車', '3034.TW': '聯詠', '2890.TW': '永豐金', '4904.TW': '遠傳',
+            '1301.TW': '台塑', '1303.TW': '南亞', '2324.TW': '仁寶', '2357.TW': '華碩',
+            '2609.TW': '陽明', '2615.TW': '萬海', '3037.TW': '欣興', '2379.TW': '瑞昱',
+            '3293.TW': '鈊象', '2301.TW': '光寶科', '3661.TW': '世芯-KY', '5871.TW': '中租-KY'
+        }
     return stock_dict
 
-# ★ 新增：將下載資料快取起來 (30分鐘內不重複下載，避免被 Yahoo 封鎖)
 @st.cache_data(ttl=1800, show_spinner=False)
 def download_stock_data(tickers):
     return yf.download(tickers, period="6mo", group_by="ticker", threads=True, progress=False)
@@ -92,7 +112,7 @@ if st.button("🚀 開始篩選 (一鍵執行)", use_container_width=True, type=
     progress_bar = st.progress(0)
     status_text = st.empty()
     total_stocks = len(all_tickers)
-    valid_stock_count = 0  # ★ 新增：計算成功取得資料的股票數量
+    valid_stock_count = 0 
     
     for idx, ticker in enumerate(all_tickers):
         if idx % 50 == 0:
@@ -107,8 +127,7 @@ if st.button("🚀 開始篩選 (一鍵執行)", use_container_width=True, type=
                 df_full.columns = df_full.columns.droplevel(1)
                 
             if len(df_full) < 15: continue
-            
-            valid_stock_count += 1  # 確實有歷史資料的股票 +1
+            valid_stock_count += 1 
                 
             df_full['5MA'] = df_full['Close'].rolling(window=5).mean()
             df_full = df_full.dropna()
@@ -175,7 +194,6 @@ if st.button("🚀 開始篩選 (一鍵執行)", use_container_width=True, type=
 
 # ================= 顯示結果與 AI 分析區 =================
 if st.session_state.get('calc_done'):
-    # 顯示成功處理了多少檔股票！
     st.success(f"🎉 運算完成！(今日成功取得歷史資料的股票共 {st.session_state['valid_count']} 檔)")
     
     selected_date = st.radio("📅 選擇資料日期：", st.session_state['dates'], horizontal=True)
@@ -195,12 +213,12 @@ if st.session_state.get('calc_done'):
     all_filtered_stocks = current_data['up'] + current_data['down']
     
     if not all_filtered_stocks:
-        st.info("本日無符合條件的股票可供分析。")
+        st.info("該日無符合條件的股票可供分析。")
     elif not HAS_AI:
         st.warning("⚠️ 系統尚未偵測到 AI 鑰匙，請確認已將鑰匙存入 Streamlit Secrets。")
     else:
         stock_options = {row['代號名稱']: row for row in all_filtered_stocks}
-        selected_stock_name = st.selectbox("請選擇一檔您有興趣的股票，讓 AI 為您進行四大面向深度診斷：", list(stock_options.keys()))
+        selected_stock_name = st.selectbox("請選擇一檔股票，讓 AI 進行深度診斷：", list(stock_options.keys()))
         
         if st.button(f"✨ 開始診斷 {selected_stock_name}", type="primary"):
             target_stock = stock_options[selected_stock_name]
@@ -209,15 +227,26 @@ if st.session_state.get('calc_done'):
                 try:
                     ticker_obj = yf.Ticker(target_stock['代碼'])
                     info = ticker_obj.info
-                    news = ticker_obj.news
                     
                     pe_ratio = info.get('trailingPE', '無資料')
                     pb_ratio = info.get('priceToBook', '無資料')
                     volume = info.get('volume', '無資料')
                     
+                    # 💡 防彈新聞捕捉機制：安全地提取新聞標題
                     news_titles = "無最新新聞"
-                    if news:
-                        news_titles = "\n".join([f"- {n['title']}" for n in news[:3]])
+                    try:
+                        news = ticker_obj.news
+                        if news and isinstance(news, list):
+                            safe_news = []
+                            for n in news[:3]:
+                                if isinstance(n, dict):
+                                    # 無論標題叫 title 還是被藏在 content 裡面，都把它挖出來
+                                    title = n.get('title') or n.get('content', {}).get('title') or "無標題新聞"
+                                    safe_news.append(f"- {title}")
+                            if safe_news:
+                                news_titles = "\n".join(safe_news)
+                    except Exception:
+                        news_titles = "新聞資料獲取失敗"
                         
                     prompt = f"""
                     你是一位精通台股的專業操盤手與分析師。
@@ -248,4 +277,4 @@ if st.session_state.get('calc_done'):
                     st.markdown(response.text)
                     
                 except Exception as e:
-                    st.error(f"AI 診斷過程中發生錯誤。原因：{e}")
+                    st.error(f"AI 診斷過程中發生未預期的錯誤。詳細原因：{e}")
