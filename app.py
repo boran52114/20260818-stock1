@@ -8,11 +8,9 @@ import google.generativeai as genai
 st.set_page_config(page_title="台股波段多空篩選器", page_icon="📈", layout="wide")
 
 # ================= AI 設定 =================
-# 嘗試從保險箱讀取鑰匙並設定 Gemini AI
 HAS_AI = False
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    # 使用最新的 gemini-1.5-flash 模型，速度快且免費額度高
     model = genai.GenerativeModel('gemini-1.5-flash')
     HAS_AI = True
 
@@ -35,6 +33,11 @@ def get_tw_stock_info():
     except Exception:
         stock_dict = {'2330.TW': '台積電', '2317.TW': '鴻海', '2891.TW': '中信金'}
     return stock_dict
+
+# ★ 新增：將下載資料快取起來 (30分鐘內不重複下載，避免被 Yahoo 封鎖)
+@st.cache_data(ttl=1800, show_spinner=False)
+def download_stock_data(tickers):
+    return yf.download(tickers, period="6mo", group_by="ticker", threads=True, progress=False)
 
 def render_html_table(data_list):
     if not data_list:
@@ -66,6 +69,7 @@ if 'calc_done' not in st.session_state:
     st.session_state['calc_done'] = False
     st.session_state['results'] = {}
     st.session_state['dates'] = []
+    st.session_state['valid_count'] = 0
 
 st.write("點擊下方按鈕，系統將自動抓取全市場資料並運算（約需 1~3 分鐘）。")
 
@@ -74,9 +78,9 @@ if st.button("🚀 開始篩選 (一鍵執行)", use_container_width=True, type=
         stock_info = get_tw_stock_info()
         all_tickers = list(stock_info.keys())
         
-    with st.spinner(f"正在下載 {len(all_tickers)} 檔股票歷史資料，請耐心等候..."):
+    with st.spinner(f"正在下載或讀取 {len(all_tickers)} 檔股票歷史資料，請耐心等候..."):
         try:
-            data = yf.download(all_tickers, period="6mo", group_by="ticker", threads=True, progress=False)
+            data = download_stock_data(all_tickers)
         except Exception:
             st.error("下載資料發生錯誤，請稍後再試。")
             st.stop()
@@ -88,6 +92,7 @@ if st.button("🚀 開始篩選 (一鍵執行)", use_container_width=True, type=
     progress_bar = st.progress(0)
     status_text = st.empty()
     total_stocks = len(all_tickers)
+    valid_stock_count = 0  # ★ 新增：計算成功取得資料的股票數量
     
     for idx, ticker in enumerate(all_tickers):
         if idx % 50 == 0:
@@ -102,6 +107,8 @@ if st.button("🚀 開始篩選 (一鍵執行)", use_container_width=True, type=
                 df_full.columns = df_full.columns.droplevel(1)
                 
             if len(df_full) < 15: continue
+            
+            valid_stock_count += 1  # 確實有歷史資料的股票 +1
                 
             df_full['5MA'] = df_full['Close'].rolling(window=5).mean()
             df_full = df_full.dropna()
@@ -160,6 +167,7 @@ if st.button("🚀 開始篩選 (一鍵執行)", use_container_width=True, type=
             
     st.session_state['results'] = results_by_date
     st.session_state['dates'] = date_strs[::-1]
+    st.session_state['valid_count'] = valid_stock_count
     st.session_state['calc_done'] = True
     progress_bar.empty()
     status_text.empty()
@@ -167,7 +175,9 @@ if st.button("🚀 開始篩選 (一鍵執行)", use_container_width=True, type=
 
 # ================= 顯示結果與 AI 分析區 =================
 if st.session_state.get('calc_done'):
-    st.success("🎉 運算完成！")
+    # 顯示成功處理了多少檔股票！
+    st.success(f"🎉 運算完成！(今日成功取得歷史資料的股票共 {st.session_state['valid_count']} 檔)")
+    
     selected_date = st.radio("📅 選擇資料日期：", st.session_state['dates'], horizontal=True)
     current_data = st.session_state['results'][selected_date]
     
@@ -182,24 +192,21 @@ if st.session_state.get('calc_done'):
     # ===== 🤖 AI 深度分析區 =====
     st.subheader("🤖 AI 專屬操盤助理")
     
-    # 將所有符合條件的股票整理成一個下拉選單
     all_filtered_stocks = current_data['up'] + current_data['down']
     
     if not all_filtered_stocks:
         st.info("本日無符合條件的股票可供分析。")
     elif not HAS_AI:
-        st.warning("⚠️ 系統尚未偵測到 AI 鑰匙 (API Key)，請確認是否已將鑰匙存入 Streamlit Secrets。")
+        st.warning("⚠️ 系統尚未偵測到 AI 鑰匙，請確認已將鑰匙存入 Streamlit Secrets。")
     else:
-        # 製作下拉選單的選項
         stock_options = {row['代號名稱']: row for row in all_filtered_stocks}
         selected_stock_name = st.selectbox("請選擇一檔您有興趣的股票，讓 AI 為您進行四大面向深度診斷：", list(stock_options.keys()))
         
         if st.button(f"✨ 開始診斷 {selected_stock_name}", type="primary"):
             target_stock = stock_options[selected_stock_name]
             
-            with st.spinner(f"AI 正在為您收集 {selected_stock_name} 的資料並思考中... (大約需要 10 秒鐘)"):
+            with st.spinner(f"AI 正在為您收集 {selected_stock_name} 的資料並思考中... (大約需要 10~15 秒)"):
                 try:
-                    # 1. 自動去 Yahoo Finance 抓取最新基本面與新聞
                     ticker_obj = yf.Ticker(target_stock['代碼'])
                     info = ticker_obj.info
                     news = ticker_obj.news
@@ -210,9 +217,8 @@ if st.session_state.get('calc_done'):
                     
                     news_titles = "無最新新聞"
                     if news:
-                        news_titles = "\n".join([f"- {n['title']}" for n in news[:3]]) # 只取最近3篇
+                        news_titles = "\n".join([f"- {n['title']}" for n in news[:3]])
                         
-                    # 2. 撰寫給 AI 的指令 (Prompt)
                     prompt = f"""
                     你是一位精通台股的專業操盤手與分析師。
                     我目前使用「波段高低點與5日均線」策略篩選出了這檔股票，請根據以下提供的資料，幫我撰寫一份給散戶看的「四大面向」診斷報告。
@@ -236,13 +242,9 @@ if st.session_state.get('calc_done'):
                     4. 🎯 AI 交易計畫建議 (請具體給出建倉建議、停損防守價位、以及風險獲利比的評估)
                     """
                     
-                    # 3. 呼叫 AI 產生報告
                     response = model.generate_content(prompt)
                     
-                    # 4. 顯示報告
                     st.success("✨ 診斷完成！請參考以下 AI 分析報告：")
-                    
-                    # 用 Markdown 將 AI 的回答漂亮地印出來
                     st.markdown(response.text)
                     
                 except Exception as e:
