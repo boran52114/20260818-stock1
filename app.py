@@ -7,14 +7,36 @@ import google.generativeai as genai
 # ================= 網頁設定 =================
 st.set_page_config(page_title="台股波段多空篩選器", page_icon="📈", layout="wide")
 
-# ================= AI 設定 =================
+# ================= AI 設定與自動探測 =================
 HAS_AI = False
+AI_MODEL_NAME = ""
+
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    
-    # ★ 修復點：改用最穩定且通用的 gemini-pro 模型，避免 404 找不到模型的錯誤
-    model = genai.GenerativeModel('gemini-pro')
-    HAS_AI = True
+    try:
+        # 1. 取得這把鑰匙目前支援的所有生成模型
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # 2. 使用者指定的夢幻模型
+        user_target = "models/gemma-4-31b-it"
+        
+        # 3. 智慧安全網：尋找可用模型，避免 404 當機
+        if user_target in available_models:
+            AI_MODEL_NAME = user_target
+        elif "models/gemini-1.5-pro" in available_models:
+            AI_MODEL_NAME = "models/gemini-1.5-pro"
+        elif "models/gemini-1.5-flash" in available_models:
+            AI_MODEL_NAME = "models/gemini-1.5-flash"
+        elif "models/gemini-pro" in available_models:
+            AI_MODEL_NAME = "models/gemini-pro"
+        elif len(available_models) > 0:
+            AI_MODEL_NAME = available_models[0] # 如果都沒有，抓第一個能用的
+            
+        if AI_MODEL_NAME:
+            model = genai.GenerativeModel(AI_MODEL_NAME)
+            HAS_AI = True
+    except Exception as e:
+        HAS_AI = False
 
 # ================= 輔助函式區 =================
 @st.cache_data(ttl=86400)
@@ -35,16 +57,13 @@ def get_tw_stock_info():
             for item in res_tpex.json():
                 if len(item['SecuritiesCompanyCode']) == 4:
                     stock_dict[item['SecuritiesCompanyCode'] + '.TWO'] = item['CompanyName']
-                    
     except Exception:
         pass 
 
     if len(stock_dict) < 100:
         stock_dict = {
             '2330.TW': '台積電', '2317.TW': '鴻海', '2454.TW': '聯發科', '2382.TW': '廣達', 
-            '2308.TW': '台達電', '2881.TW': '富邦金', '2891.TW': '中信金', '2412.TW': '中華電', 
-            '2882.TW': '國泰金', '2886.TW': '兆豐金', '3231.TW': '緯創', '3711.TW': '日月光', 
-            '2884.TW': '玉山金', '1216.TW': '統一', '2885.TW': '元大金', '2002.TW': '中鋼'
+            '2881.TW': '富邦金', '2891.TW': '中信金', '2412.TW': '中華電', '2882.TW': '國泰金'
         }
     return stock_dict
 
@@ -187,7 +206,7 @@ if st.button("🚀 開始篩選 (一鍵執行)", use_container_width=True, type=
 
 # ================= 顯示結果與 AI 分析區 =================
 if st.session_state.get('calc_done'):
-    st.success(f"🎉 運算完成！(今日成功取得歷史資料的股票共 {st.session_state['valid_count']} 檔)")
+    st.success(f"🎉 運算完成！(成功取得歷史資料: {st.session_state['valid_count']} 檔)")
     
     selected_date = st.radio("📅 選擇資料日期：", st.session_state['dates'], horizontal=True)
     current_data = st.session_state['results'][selected_date]
@@ -208,8 +227,10 @@ if st.session_state.get('calc_done'):
     if not all_filtered_stocks:
         st.info("該日無符合條件的股票可供分析。")
     elif not HAS_AI:
-        st.warning("⚠️ 系統尚未偵測到 AI 鑰匙，請確認已將鑰匙存入 Streamlit Secrets。")
+        st.warning("⚠️ 系統未能成功連接 AI。可能是 API 鑰匙無效，或當前伺服器無可用模型。")
     else:
+        st.caption(f"🧠 目前啟用的 AI 模型核心：`{AI_MODEL_NAME}`")
+        
         stock_options = {row['代號名稱']: row for row in all_filtered_stocks}
         selected_stock_name = st.selectbox("請選擇一檔股票，讓 AI 進行深度診斷：", list(stock_options.keys()))
         
