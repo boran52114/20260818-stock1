@@ -11,14 +11,15 @@ st.set_page_config(page_title="台股波段多空篩選器", page_icon="📈", l
 HAS_AI = False
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    
+    # ★ 修復點：改用最穩定且通用的 gemini-pro 模型，避免 404 找不到模型的錯誤
+    model = genai.GenerativeModel('gemini-pro')
     HAS_AI = True
 
 # ================= 輔助函式區 =================
 @st.cache_data(ttl=86400)
 def get_tw_stock_info():
     stock_dict = {}
-    # 加入瀏覽器偽裝，降低被台灣政府 API 阻擋的機率
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
     }
@@ -36,22 +37,14 @@ def get_tw_stock_info():
                     stock_dict[item['SecuritiesCompanyCode'] + '.TWO'] = item['CompanyName']
                     
     except Exception:
-        pass # 如果失敗，將在下方回退到備用名單
+        pass 
 
-    # 備用機制：如果證交所 API 封鎖雲端 IP，至少提供台股前 50 大權值股，確保系統仍有優質標的可篩
     if len(stock_dict) < 100:
         stock_dict = {
             '2330.TW': '台積電', '2317.TW': '鴻海', '2454.TW': '聯發科', '2382.TW': '廣達', 
             '2308.TW': '台達電', '2881.TW': '富邦金', '2891.TW': '中信金', '2412.TW': '中華電', 
             '2882.TW': '國泰金', '2886.TW': '兆豐金', '3231.TW': '緯創', '3711.TW': '日月光', 
-            '2884.TW': '玉山金', '1216.TW': '統一', '2885.TW': '元大金', '2002.TW': '中鋼', 
-            '2892.TW': '第一金', '2603.TW': '長榮', '2303.TW': '聯電', '2356.TW': '英業達',
-            '3045.TW': '台灣大', '2345.TW': '智邦', '2880.TW': '華南金', '2883.TW': '開發金',
-            '2887.TW': '台新金', '2395.TW': '研華', '5880.TW': '合庫金', '2912.TW': '統一超',
-            '2207.TW': '和泰車', '3034.TW': '聯詠', '2890.TW': '永豐金', '4904.TW': '遠傳',
-            '1301.TW': '台塑', '1303.TW': '南亞', '2324.TW': '仁寶', '2357.TW': '華碩',
-            '2609.TW': '陽明', '2615.TW': '萬海', '3037.TW': '欣興', '2379.TW': '瑞昱',
-            '3293.TW': '鈊象', '2301.TW': '光寶科', '3661.TW': '世芯-KY', '5871.TW': '中租-KY'
+            '2884.TW': '玉山金', '1216.TW': '統一', '2885.TW': '元大金', '2002.TW': '中鋼'
         }
     return stock_dict
 
@@ -232,7 +225,6 @@ if st.session_state.get('calc_done'):
                     pb_ratio = info.get('priceToBook', '無資料')
                     volume = info.get('volume', '無資料')
                     
-                    # 💡 防彈新聞捕捉機制：安全地提取新聞標題
                     news_titles = "無最新新聞"
                     try:
                         news = ticker_obj.news
@@ -240,7 +232,6 @@ if st.session_state.get('calc_done'):
                             safe_news = []
                             for n in news[:3]:
                                 if isinstance(n, dict):
-                                    # 無論標題叫 title 還是被藏在 content 裡面，都把它挖出來
                                     title = n.get('title') or n.get('content', {}).get('title') or "無標題新聞"
                                     safe_news.append(f"- {title}")
                             if safe_news:
