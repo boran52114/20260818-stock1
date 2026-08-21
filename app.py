@@ -352,7 +352,7 @@ if st.session_state.get('calc_done'):
                     
                     st.write("---")
                     
-                    # ================= 戰情室左右分欄設計 =================
+# ================= 戰情室左右分欄設計 =================
                     # 左欄佔 30% 寬度，右欄佔 70% 寬度
                     col_left, col_right = st.columns([3, 7])
                     
@@ -360,6 +360,7 @@ if st.session_state.get('calc_done'):
                     with col_left:
                         st.subheader("📊 客觀數據儀表板")
                         
+                        # --- 1. K線與型態評分 ---
                         if score_val >= 60:
                             score_title = f"🟢 綜合評分：{score_val} 分 (強勢)"
                         elif score_val >= 30:
@@ -370,7 +371,7 @@ if st.session_state.get('calc_done'):
                         with st.expander(score_title, expanded=True):
                             st.markdown(score_html, unsafe_allow_html=True)
                             
-# --- 2. 溫度計運算邏輯 (月線乖離率) ---
+                        # --- 2. 溫度計運算邏輯 (月線乖離率) ---
                         try:
                             ma20 = df_tech['Close'].rolling(window=20).mean().iloc[-1]
                             close_price = df_tech['Close'].iloc[-1]
@@ -399,33 +400,26 @@ if st.session_state.get('calc_done'):
                             
                         # --- 3. 籌碼與基本面運算邏輯 (OBV + 估值) ---
                         try:
-                            # 算 OBV (用 Pandas 寫法，絕不報錯)
                             df_tech['Direction'] = df_tech['Close'].diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
                             df_tech['OBV'] = (df_tech['Volume'] * df_tech['Direction']).cumsum()
                             obv_current = df_tech['OBV'].iloc[-1]
                             obv_ma20 = df_tech['OBV'].rolling(window=20).mean().iloc[-1]
                             
-                            # 算量價
                             vol_1 = df_tech['Volume'].iloc[-1]
                             vol_5ma = df_tech['Volume'].tail(5).mean()
-                            
-                            # 抓本益比
                             pe_val = info.get('trailingPE', 0)
                             
                             chip_details = []
-                            # 判斷 1: 量能換手
                             if vol_1 > vol_5ma:
                                 chip_details.append("✅ **【帶量突破】**：今日成交量大於 5 日均量。代表有真實的資金(子彈)推升股價，突破有效度高。")
                             else:
                                 chip_details.append("⚠️ **【無量上漲】**：今日成交量低於 5 日均量。股價上漲但缺乏資金追捧，慎防「誘多假突破」。")
                                 
-                            # 判斷 2: OBV 主力吸籌
                             if obv_current > obv_ma20:
                                 chip_details.append("✅ **【主力吸籌】**：近期 OBV 能量潮站上均線。代表整體資金呈現「淨流入」，主力可能正在暗中吃貨。")
                             else:
                                 chip_details.append("⚠️ **【籌碼流失】**：近期 OBV 能量潮跌破均線。代表整體資金呈現「淨流出」，須留意主力拉高出貨。")
                                 
-                            # 判斷 3: 本益比
                             if pe_val is None or pe_val == 0:
                                 chip_details.append("⚪ **【估值狀態】**：N/A (可能為 ETF 或獲利為負，無本益比數據)。")
                             elif pe_val < 15:
@@ -435,7 +429,6 @@ if st.session_state.get('calc_done'):
                             else:
                                 chip_details.append(f"🔴 **【作夢估值】**：本益比約 {pe_val:.1f} 倍。大於 25 倍代表股價已透支未來獲利，操作須嚴設停損。")
 
-                            # 教學小教室
                             chip_teaching = "\n\n---\n**💡 導師觀念教學：什麼是 OBV 與 本益比？**\n*   **OBV (能量潮指標)**：把它想像成資金的「水庫」。今天漲，量就加進水庫；今天跌，量就扣除。若股價沒什麼漲，水庫的水位(OBV)卻不斷創新高，代表主力在偷偷倒水進去(吸籌碼)！\n*   **本益比 (P/E)**：代表「買下這家公司，幾年能回本」。本益比 15 倍代表要 15 年回本。數字越小，代表目前股價越便宜。"
 
                             chip_title = "💰 價量籌碼與基本面雷達"
@@ -447,3 +440,11 @@ if st.session_state.get('calc_done'):
 
                         with st.expander(chip_title, expanded=False):
                             st.markdown(chip_msg)
+
+                    # 👉 【右側區塊：AI 操盤導師報告】
+                    with col_right:
+                        st.subheader("🤖 AI 操盤導師深度解析")
+                        st.markdown(clean_output)
+                        
+                except Exception as e:
+                    st.error(f"AI 診斷過程中發生未預期的錯誤。詳細原因：{e}")
