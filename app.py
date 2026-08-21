@@ -3,7 +3,6 @@ import yfinance as yf
 import pandas as pd
 import requests
 import google.generativeai as genai
-import pandas_ta as ta
 
 # ================= 網頁設定 =================
 st.set_page_config(page_title="台股波段多空篩選器", page_icon="📈", layout="wide")
