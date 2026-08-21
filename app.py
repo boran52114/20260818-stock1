@@ -60,28 +60,27 @@ def download_stock_data(tickers):
     return yf.download(tickers, period="6mo", group_by="ticker", threads=True, progress=False)
 
 def render_html_table(data_list):
-    def calculate_kline_score(df_stock):
-    """
-    自製輕量級 K 線與動能評分引擎 (-100 ~ +100)
-    傳入: 該檔股票最近的歷史 DataFrame
-    回傳: (總分, 評分明細字串)
-    """
+    if not data_list: return "<div style='font-size: 16px; margin-top: 10px; color: #666;'>本日無符合條件標的（或無波動大於 3% 之標的）</div>"
+    html = "<div style='overflow-x: auto;'><table style='width: 100%; min-width: 600px; border-collapse: collapse; font-size: 16px; text-align: center; font-family: sans-serif;'>"
+    html += "<tr style='background-color: #f0f2f6; border-bottom: 2px solid #ddd;'><th style='padding: 10px;'>代號名稱</th><th style='padding: 10px;'>收盤價</th><th style='padding: 10px;'>漲跌幅</th><th style='padding: 10px;'>第一低</th><th style='padding: 10px;'>第二低</th><th style='padding: 10px;'>第一高</th><th style='padding: 10px;'>第二高</th></tr>"
+    for row in data_list:
+        color = "#ff4b4b" if "+" in row['漲跌幅'] else "#09ab3b" if "-" in row['漲跌幅'] else "black"
+        html += f"<tr style='border-bottom: 1px solid #eee;'><td style='padding: 8px;'><b>{row['代號名稱']}</b></td><td style='padding: 8px;'>{row['收盤價']}</td><td style='padding: 8px; color: {color}; font-weight: bold;'>{row['漲跌幅']}</td><td style='padding: 8px;'>{row['第一低']}</td><td style='padding: 8px;'>{row['第二低']}</td><td style='padding: 8px;'>{row['第一高']}</td><td style='padding: 8px;'>{row['第二高']}</td></tr>"
+    return html + "</table></div>"
+
+def calculate_kline_score(df_stock):
     if len(df_stock) < 5:
         return 30, "<li>資料不足，僅給予基礎突破分 (+30)</li>"
         
-    score = 30 # 基礎分：符合嚴格篩選器條件
+    score = 30
     details = ["<li><b>基礎動能</b>：符合波段轉折與 5MA 突破，具備基本多方架構 (+30分)</li>"]
     
-    # 取得近三天的 O(開) H(高) L(低) C(收) 與成交量 V
-    # index: -1(今日), -2(昨日), -3(前日)
     O1, H1, L1, C1, V1 = df_stock['Open'].iloc[-1], df_stock['High'].iloc[-1], df_stock['Low'].iloc[-1], df_stock['Close'].iloc[-1], df_stock['Volume'].iloc[-1]
     O2, H2, L2, C2, V2 = df_stock['Open'].iloc[-2], df_stock['High'].iloc[-2], df_stock['Low'].iloc[-2], df_stock['Close'].iloc[-2], df_stock['Volume'].iloc[-2]
     O3, H3, L3, C3 = df_stock['Open'].iloc[-3], df_stock['High'].iloc[-3], df_stock['Low'].iloc[-3], df_stock['Close'].iloc[-3]
     
-    # 均量計算 (5日均量)
     vol_5ma = df_stock['Volume'].tail(5).mean()
 
-    # --- 1. 量能加扣分 ---
     if V1 > vol_5ma * 1.5:
         score += 20
         details.append("<li><b>量能爆發</b>：今日爆量上漲，超過 5 日均量 1.5 倍，主力介入明顯 (+20分)</li>")
@@ -89,23 +88,15 @@ def render_html_table(data_list):
         score -= 20
         details.append("<li><span style='color:red;'><b>量價背離</b>：今日實體突破但成交量卻萎縮，慎防假突破誘多 (-20分)</span></li>")
 
-    # --- 2. 經典 K 線型態判斷 (採用套件底層嚴格邏輯) ---
-    # 多方吞噬 (Bullish Engulfing): 昨黑，今紅，今開<昨收，今收>昨開
     if C2 < O2 and C1 > O1 and O1 < C2 and C1 > O2:
         score += 30
         details.append("<li><b>多方吞噬</b>：強力反轉型態，今日紅 K 徹底吃掉昨日賣壓 (+30分)</li>")
-        
-    # 貫穿線 (Piercing Line): 昨黑，今紅，今開<昨低，今收>昨實體一半
     elif C2 < O2 and C1 > O1 and O1 < L2 and C1 > ((O2 + C2) / 2):
         score += 20
         details.append("<li><b>貫穿線</b>：主力洗盤後強拉，收復昨日過半跌幅 (+20分)</li>")
-        
-    # 晨星 (Morning Star): 前日大黑，昨日跳空小實體，今日大紅吃過前日黑K一半
     elif C3 < O3 and abs(C2 - O2) < (H2 - L2) * 0.3 and C1 > O1 and C1 > ((O3 + C3) / 2):
         score += 30
         details.append("<li><b>晨星型態</b>：極強烈的波段起漲反轉訊號 (+30分)</li>")
-        
-    # 槌子線 (Hammer): 今紅，下影線長度 > 實體 2 倍，幾乎無上影線
     elif C1 > O1:
         body = C1 - O1
         lower_shadow = O1 - L1
@@ -114,8 +105,6 @@ def render_html_table(data_list):
             score += 10
             details.append("<li><b>槌子線</b>：下方出現長下影線，顯示有低接買盤防守 (+10分)</li>")
 
-    # --- 3. 避開主力出貨 (扣分區) ---
-    # 烏雲罩頂 (Dark Cloud Cover) 或 流星線/長上影線
     if C1 > O1:
         body = C1 - O1
         upper_shadow = H1 - C1
@@ -123,18 +112,9 @@ def render_html_table(data_list):
             score -= 30
             details.append("<li><span style='color:red;'><b>流星線/長上影線</b>：突破日遭遇極大上檔賣壓，主力可能拉高出貨，極度危險 (-30分)</span></li>")
             
-    # 限制分數在 -100 到 100 之間
     score = max(-100, min(100, score))
-    
     details_html = f"<ul>{''.join(details)}</ul>"
     return score, details_html
-    if not data_list: return "<div style='font-size: 16px; margin-top: 10px; color: #666;'>本日無符合條件標的（或無波動大於 3% 之標的）</div>"
-    html = "<div style='overflow-x: auto;'><table style='width: 100%; min-width: 600px; border-collapse: collapse; font-size: 16px; text-align: center; font-family: sans-serif;'>"
-    html += "<tr style='background-color: #f0f2f6; border-bottom: 2px solid #ddd;'><th style='padding: 10px;'>代號名稱</th><th style='padding: 10px;'>收盤價</th><th style='padding: 10px;'>漲跌幅</th><th style='padding: 10px;'>第一低</th><th style='padding: 10px;'>第二低</th><th style='padding: 10px;'>第一高</th><th style='padding: 10px;'>第二高</th></tr>"
-    for row in data_list:
-        color = "#ff4b4b" if "+" in row['漲跌幅'] else "#09ab3b" if "-" in row['漲跌幅'] else "black"
-        html += f"<tr style='border-bottom: 1px solid #eee;'><td style='padding: 8px;'><b>{row['代號名稱']}</b></td><td style='padding: 8px;'>{row['收盤價']}</td><td style='padding: 8px; color: {color}; font-weight: bold;'>{row['漲跌幅']}</td><td style='padding: 8px;'>{row['第一低']}</td><td style='padding: 8px;'>{row['第二低']}</td><td style='padding: 8px;'>{row['第一高']}</td><td style='padding: 8px;'>{row['第二高']}</td></tr>"
-    return html + "</table></div>"
 
 # ================= 主程式區 =================
 st.title("📈 台股波段多空篩選器 & AI 診斷")
