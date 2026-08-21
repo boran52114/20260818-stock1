@@ -33,22 +33,28 @@ if "GEMINI_API_KEY" in st.secrets:
 @st.cache_data(ttl=86400)
 def get_tw_stock_info():
     stock_dict = {}
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"}
     try:
         res_twse = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", headers=headers, timeout=15)
         if res_twse.status_code == 200:
             for item in res_twse.json():
-                if len(item['Code']) == 4: stock_dict[item['Code'] + '.TW'] = item['Name']
+                code = item['Code']
+                # ★ 優化：長度為4 (一般股票) 或 '00' 開頭 (ETF) 通通納入
+                if len(code) == 4 or code.startswith('00'): 
+                    stock_dict[code + '.TW'] = item['Name']
         
         res_tpex = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", headers=headers, timeout=15)
         if res_tpex.status_code == 200:
             for item in res_tpex.json():
-                if len(item['SecuritiesCompanyCode']) == 4: stock_dict[item['SecuritiesCompanyCode'] + '.TWO'] = item['CompanyName']
+                code = item['SecuritiesCompanyCode']
+                if len(code) == 4 or code.startswith('00'): 
+                    stock_dict[code + '.TWO'] = item['CompanyName']
     except Exception:
         pass 
 
     if len(stock_dict) < 100:
-        stock_dict = {'2330.TW': '台積電', '2317.TW': '鴻海', '2454.TW': '聯發科', '2382.TW': '廣達', '2881.TW': '富邦金', '2891.TW': '中信金'}
+        # 備用名單也加入熱門 ETF
+        stock_dict = {'2330.TW': '台積電', '2317.TW': '鴻海', '2454.TW': '聯發科', '0050.TW': '元大台灣50', '00878.TW': '國泰永續高股息', '00929.TW': '復華台灣科技優息'}
     return stock_dict
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -56,7 +62,7 @@ def download_stock_data(tickers):
     return yf.download(tickers, period="6mo", group_by="ticker", threads=True, progress=False)
 
 def render_html_table(data_list):
-    if not data_list: return "<div style='font-size: 16px; margin-top: 10px;'>本日無符合條件標的</div>"
+    if not data_list: return "<div style='font-size: 16px; margin-top: 10px; color: #666;'>本日無符合條件標的（或無波動大於 3% 之標的）</div>"
     html = "<div style='overflow-x: auto;'><table style='width: 100%; min-width: 600px; border-collapse: collapse; font-size: 16px; text-align: center; font-family: sans-serif;'>"
     html += "<tr style='background-color: #f0f2f6; border-bottom: 2px solid #ddd;'><th style='padding: 10px;'>代號名稱</th><th style='padding: 10px;'>收盤價</th><th style='padding: 10px;'>漲跌幅</th><th style='padding: 10px;'>第一低</th><th style='padding: 10px;'>第二低</th><th style='padding: 10px;'>第一高</th><th style='padding: 10px;'>第二高</th></tr>"
     for row in data_list:
@@ -66,6 +72,7 @@ def render_html_table(data_list):
 
 # ================= 主程式區 =================
 st.title("📈 台股波段多空篩選器 & AI 診斷")
+st.write("條件：道氏理論波段轉折 + 突破/跌破 5MA + **當日實體動能 (漲跌幅達 3% 以上)**")
 
 if 'calc_done' not in st.session_state:
     st.session_state['calc_done'] = False
@@ -73,14 +80,12 @@ if 'calc_done' not in st.session_state:
     st.session_state['dates'] = []
     st.session_state['valid_count'] = 0
 
-st.write("點擊下方按鈕，系統將自動抓取全市場資料並運算（約需 1~3 分鐘）。")
-
 if st.button("🚀 開始篩選 (一鍵執行)", use_container_width=True, type="primary"):
-    with st.spinner("正在獲取台股全市場代碼與名稱..."):
+    with st.spinner("正在獲取台股全市場代碼 (含個股與ETF)..."):
         stock_info = get_tw_stock_info()
         all_tickers = list(stock_info.keys())
         
-    with st.spinner(f"正在下載或讀取 {len(all_tickers)} 檔股票歷史資料，請耐心等候..."):
+    with st.spinner(f"正在下載或讀取 {len(all_tickers)} 檔標的歷史資料，請耐心等候..."):
         try:
             data = download_stock_data(all_tickers)
         except Exception:
@@ -139,14 +144,18 @@ if st.button("🚀 開始篩選 (一鍵執行)", use_container_width=True, type=
 
                 today_pos, yest_pos = df['Position'].iloc[-1], df['Position'].iloc[-2]
                 today_close, yest_close = df['Close'].iloc[-1], df['Close'].iloc[-2]
-                pct_change = ((today_close - yest_close) / yest_close) * 100
-                pct_str = f"+{pct_change:.2f}%" if pct_change > 0 else f"{pct_change:.2f}%"
+                
+                # 計算真實漲跌幅數值
+                pct_change_val = ((today_close - yest_close) / yest_close) * 100
+                pct_str = f"+{pct_change_val:.2f}%" if pct_change_val > 0 else f"{pct_change_val:.2f}%"
 
                 stock_code = ticker.split('.')[0]
                 stock_name = stock_info.get(ticker, "")
                 full_name = f"{stock_code} {stock_name}"
                 
-                if today_pos == 1 and yest_pos == -1 and len(waves) >= 5:
+                # ★ 優化：加入 3% 漲跌幅過濾條件
+                # 🟢 多方：向上突破 且 漲幅 >= 3%
+                if today_pos == 1 and yest_pos == -1 and pct_change_val >= 3.0 and len(waves) >= 5:
                     low_2, high_2, low_1, high_1 = waves[-2]['low'], waves[-3]['high'], waves[-4]['low'], waves[-5]['high']
                     if high_2 >= high_1 and low_2 >= low_1:
                         results_by_date[date_str]['up'].append({
@@ -154,7 +163,8 @@ if st.button("🚀 開始篩選 (一鍵執行)", use_container_width=True, type=
                             "第一低": round(low_1, 2), "第二低": round(low_2, 2), "第一高": round(high_1, 2), "第二高": round(high_2, 2)
                         })
 
-                elif today_pos == -1 and yest_pos == 1 and len(waves) >= 5:
+                # 🔴 空方：向下跌破 且 跌幅 <= -3%
+                elif today_pos == -1 and yest_pos == 1 and pct_change_val <= -3.0 and len(waves) >= 5:
                     high_2, low_2, high_1, low_1 = waves[-2]['high'], waves[-3]['low'], waves[-4]['high'], waves[-5]['low']
                     if high_2 <= high_1 and low_2 <= low_1:
                         results_by_date[date_str]['down'].append({
@@ -174,12 +184,12 @@ if st.button("🚀 開始篩選 (一鍵執行)", use_container_width=True, type=
 
 # ================= 顯示結果與 AI 分析區 =================
 if st.session_state.get('calc_done'):
-    st.success(f"🎉 運算完成！(成功取得歷史資料: {st.session_state['valid_count']} 檔)")
+    st.success(f"🎉 運算完成！(成功取得歷史資料: {st.session_state['valid_count']} 檔，含一般股票與ETF)")
     
     selected_date = st.radio("📅 選擇資料日期：", st.session_state['dates'], horizontal=True)
     current_data = st.session_state['results'][selected_date]
     
-    tab1, tab2 = st.tabs(["🟢 多方突破", "🔴 空方跌破"])
+    tab1, tab2 = st.tabs(["🟢 多方突破 (漲幅>3%)", "🔴 空方跌破 (跌幅>3%)"])
     with tab1:
         st.markdown(render_html_table(current_data['up']), unsafe_allow_html=True)
     with tab2:
@@ -193,26 +203,24 @@ if st.session_state.get('calc_done'):
     all_filtered_stocks = current_data['up'] + current_data['down']
     
     if not all_filtered_stocks:
-        st.info("該日無符合條件的股票可供分析。")
+        st.info("該日無符合條件的標的可供分析。")
     elif not HAS_AI:
         st.warning("⚠️ 系統未能成功連接 AI。可能是 API 鑰匙無效，或當前伺服器無可用模型。")
     else:
         st.caption(f"🧠 目前啟用的 AI 模型核心：`{AI_MODEL_NAME}`")
         stock_options = {row['代號名稱']: row for row in all_filtered_stocks}
-        selected_stock_name = st.selectbox("請選擇一檔股票，讓 AI 進行四大面向深度診斷：", list(stock_options.keys()))
+        selected_stock_name = st.selectbox("請選擇一檔標的，讓 AI 進行深度診斷：", list(stock_options.keys()))
         
         if st.button(f"✨ 開始診斷 {selected_stock_name}", type="primary"):
             target_stock = stock_options[selected_stock_name]
             
             with st.spinner(f"AI 正在為您計算技術指標並生成報告中... (大約需要 10~15 秒)"):
                 try:
-                    # 1. 抓取資料並計算真實的技術指標
                     ticker_obj = yf.Ticker(target_stock['代碼'])
                     df_tech = ticker_obj.history(period="3mo")
                     info = ticker_obj.info
                     
                     if not df_tech.empty and len(df_tech) > 26:
-                        # 算 RSI (14日)
                         delta = df_tech['Close'].diff()
                         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
                         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -220,7 +228,6 @@ if st.session_state.get('calc_done'):
                         rsi_14 = 100 - (100 / (1 + rs))
                         current_rsi = round(rsi_14.iloc[-1], 2)
                         
-                        # 算 MACD
                         exp1 = df_tech['Close'].ewm(span=12, adjust=False).mean()
                         exp2 = df_tech['Close'].ewm(span=26, adjust=False).mean()
                         macd = exp1 - exp2
@@ -228,7 +235,6 @@ if st.session_state.get('calc_done'):
                         macd_val = round(macd.iloc[-1], 2)
                         signal_val = round(signal.iloc[-1], 2)
                         
-                        # 算 KD (9日) - 簡化版
                         low_min = df_tech['Low'].rolling(window=9).min()
                         high_max = df_tech['High'].rolling(window=9).max()
                         rsv = 100 * ((df_tech['Close'] - low_min) / (high_max - low_min))
@@ -258,16 +264,11 @@ if st.session_state.get('calc_done'):
                     except Exception:
                         pass
                         
-                    # 2. 加入強力封口令與教學引導的 Prompt
-                    prompt = f"""
-                    【系統指令：請直接輸出最終的繁體中文分析報告，絕對禁止輸出任何英文前言、思考過程、或是 Markdown 原始碼的自我解釋。】
-                    
-                    你是一位精通台股的專業操盤導師。
-                    我目前使用「波段高點過前高，低點不破前低，且突破5日均線」的多空策略篩選出了這檔股票。
-                    請根據以下真實數據，為我撰寫一份兼具「實戰價值」與「教學意義」的四大面向診斷報告。
+                    # ★ 優化：強力格式化 Prompt，封殺英文思考草稿，直接下令開頭格式
+                    prompt = f"""請直接開始輸出繁體中文的診斷報告，你的回答【必須】以「### 1. 📊 籌碼與價量結構分析」這句話作為開頭第一行，絕對不可以包含任何英文思考過程、草稿或問候語。
 
-                    【股票真實數據】
-                    股票名稱：{selected_stock_name}
+                    【標的真實數據】
+                    名稱：{selected_stock_name}
                     當前收盤價：{target_stock['收盤價']}
                     今日成交量：{volume}
                     波段支撐點（第一低點：{target_stock['第一低']}，第二低點：{target_stock['第二低']}）
@@ -276,18 +277,18 @@ if st.session_state.get('calc_done'):
                     今日真實技術指標：{tech_data_str}
                     近期新聞標題：\n{news_titles}
 
-                    【排版與內容要求】(請直接以這4點標題輸出，不要加廢話)：
+                    【排版與內容要求】：
                     ### 1. 📊 籌碼與價量結構分析
-                    *(由於無三大法人直接數據，請教導我如何從「今日成交量」與「價格突破波段高低點的力道」來推測主力籌碼是否安定。)*
+                    (請教導我如何從「今日成交量」與「價格突破波段高低點的力道」來推測主力籌碼是否安定。)
                     
                     ### 2. 📰 基本面與新聞事件解讀
-                    *(針對本益比與新聞，說明其對股價推升的實質幫助。)*
+                    (針對本益比與新聞，說明其對股價推升的實質幫助。若是ETF則說明其特性。)
                     
                     ### 3. 📈 精確技術指標健檢
-                    *(請明確使用我提供的 RSI, MACD, KD 數字，判斷目前是黃金交叉、超買超賣、還是背離，並教我這些指標現在代表的意義。)*
+                    (請明確使用我提供的 RSI, MACD, KD 數字，判斷目前狀態並教我這些指標現在代表的意義。)
                     
-                    ### 4. 🎯 實戰交易計畫與邏輯教學 (最重要)
-                    *(請具體給出買入區間、停利點、停損點。並且在每一個點位後方，詳細說明「為什麼設定在這個價位？」(例如：跌破第二低點代表道氏理論多頭結構破壞...)，讓我能從中學習交易知識。)*
+                    ### 4. 🎯 實戰交易計畫與邏輯教學
+                    (請具體給出買入區間、停利點、停損點。並在每個點位後詳細說明「為什麼設定在這個價位？」，讓我學習交易知識。)
                     """
                     
                     response = model.generate_content(prompt)
