@@ -347,8 +347,42 @@ if st.session_state.get('calc_done'):
                         # 如果 AI 沒有乖乖用這個標題，至少把全英文的段落清掉，或者直接輸出
                         clean_output = raw_output 
                     
-                    st.success("✨ 診斷完成！您的專屬操盤導師報告如下：")
-                    st.markdown(clean_output) # 只顯示過濾後的乾淨中文
+st.success("✨ 診斷完成！已為您生成專屬戰情室報表：")
                     
-                except Exception as e:
-                    st.error(f"AI 診斷過程中發生未預期的錯誤。詳細原因：{e}")
+                    # --- 呼叫我們的 K 線評分引擎 ---
+                    score_val, score_html = calculate_kline_score(df_tech)
+                    
+                    st.write("---")
+                    
+                    # ================= 戰情室左右分欄設計 =================
+                    # 左欄佔 30% 寬度，右欄佔 70% 寬度
+                    col_left, col_right = st.columns([3, 7])
+                    
+                    # 👈 【左側區塊：客觀數據戰情室】
+                    with col_left:
+                        st.subheader("📊 客觀數據儀表板")
+                        
+                        # 決定主燈號與顏色
+                        if score_val >= 60:
+                            score_title = f"🟢 綜合評分：{score_val} 分 (強勢)"
+                        elif score_val >= 30:
+                            score_title = f"🟡 綜合評分：{score_val} 分 (中性)"
+                        else:
+                            score_title = f"🔴 綜合評分：{score_val} 分 (風險)"
+                            
+                        # 1. 第一個摺疊面板：K線與型態評分 (預設展開)
+                        with st.expander(score_title, expanded=True):
+                            st.markdown(score_html, unsafe_allow_html=True)
+                            
+                        # 2. 第二個摺疊面板：位階溫度計 (預留未來擴充，預設收合)
+                        with st.expander("🌡️ 位階溫度計 (籌備中...)", expanded=False):
+                            st.info("未來將在此顯示月線/季線乖離率，協助判斷股價是否過熱。")
+                            
+                        # 3. 第三個摺疊面板：基本與籌碼面 (預留未來擴充，預設收合)
+                        with st.expander("💰 籌碼與基本面 (籌備中...)", expanded=False):
+                            st.info("未來將在此顯示法人買賣超、本益比河流圖等核心數據。")
+
+                    # 👉 【右側區塊：AI 操盤導師報告】
+                    with col_right:
+                        st.subheader("🤖 AI 操盤導師深度解析")
+                        st.markdown(clean_output)
