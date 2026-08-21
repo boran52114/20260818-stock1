@@ -1,7 +1,5 @@
-numpy<2.0.0
 streamlit
 yfinance
 pandas
 requests
 google-generativeai
-pandas-ta
