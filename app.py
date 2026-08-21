@@ -370,28 +370,26 @@ if st.session_state.get('calc_done'):
                         with st.expander(score_title, expanded=True):
                             st.markdown(score_html, unsafe_allow_html=True)
                             
-# --- 溫度計運算邏輯 (月線乖離率) ---
+# --- 2. 溫度計運算邏輯 (月線乖離率) ---
                         try:
-                            # 拿取該檔股票的 20MA (月線) 的最新值
                             ma20 = df_tech['Close'].rolling(window=20).mean().iloc[-1]
                             close_price = df_tech['Close'].iloc[-1]
-                            
-                            # 計算乖離率 BIAS: (收盤價 - 月線) / 月線 * 100
                             bias_20 = ((close_price - ma20) / ma20) * 100
                             
-                            # 判斷溫度計燈號
+                            bias_teaching = "\n\n---\n**💡 導師觀念教學：什麼是乖離率 (BIAS)？**\n乖離率就像是「股價與均線之間的橡皮筋」。20MA(月線)代表過去一個月市場的平均成本。當股價漲太快、偏離月線太遠時，橡皮筋拉得太緊就容易產生「回檔的引力」；反之則會產生反彈。學會看乖離率，能幫你避開「買在最高點」的散戶悲劇。"
+                            
                             if bias_20 > 15:
                                 temp_title = "🌡️ 位階溫度計：🔴 嚴重過熱 (危險)"
-                                temp_msg = f"**月線乖離率：+{bias_20:.2f}%**\n\n股價已大幅噴出偏離月線(20MA)，短線追高面臨極大的獲利了結賣壓風險，建議切勿盲目追價。"
+                                temp_msg = f"**目前數值：+{bias_20:.2f}%**\n\n⚠️ **操作警告**：股價已大幅噴出偏離月線，短線追高面臨極大的獲利了結賣壓風險，建議切勿盲目追價！{bias_teaching}"
                             elif bias_20 > 5:
                                 temp_title = "🌡️ 位階溫度計：🟡 動能發散 (強勢)"
-                                temp_msg = f"**月線乖離率：+{bias_20:.2f}%**\n\n股價正處於強勢上漲軌道中，動能強勁。若為波段持股，請嚴守移動停利點。"
+                                temp_msg = f"**目前數值：+{bias_20:.2f}%**\n\n📈 **當前狀態**：股價正處於強勢上漲軌道中，動能強勁。若為波段持股，請嚴守移動停利點。{bias_teaching}"
                             elif bias_20 >= -5:
                                 temp_title = "🌡️ 位階溫度計：🟢 安全發動區 (平穩)"
-                                temp_msg = f"**月線乖離率：{bias_20:.2f}%**\n\n股價靠近月線附近，屬於起漲點或盤整突破區，此位階進場風險利潤比(賠率)最佳。"
+                                temp_msg = f"**目前數值：{bias_20:.2f}%**\n\n🎯 **當前狀態**：股價靠近月線附近，屬於起漲點或盤整突破區，此位階進場的「風險利潤比」最佳。{bias_teaching}"
                             else:
                                 temp_title = "🌡️ 位階溫度計：❄️ 跌深反彈區 (弱勢)"
-                                temp_msg = f"**月線乖離率：{bias_20:.2f}%**\n\n股價落後大盤或處於空頭反彈，操作難度高，建議觀望或搶短即跑。"
+                                temp_msg = f"**目前數值：{bias_20:.2f}%**\n\n📉 **當前狀態**：股價落後大盤或處於空頭反彈，操作難度高，建議觀望或搶短即跑。{bias_teaching}"
                         except:
                             temp_title = "🌡️ 位階溫度計：⚪ 資料不足"
                             temp_msg = "歷史資料不足 20 天，無法計算月線乖離率。"
@@ -399,13 +397,53 @@ if st.session_state.get('calc_done'):
                         with st.expander(temp_title, expanded=False):
                             st.markdown(temp_msg)
                             
-                        with st.expander("💰 籌碼與基本面 (籌備中...)", expanded=False):
-                            st.info("未來將在此顯示法人買賣超、本益比河流圖等核心數據。")
+                        # --- 3. 籌碼與基本面運算邏輯 (OBV + 估值) ---
+                        try:
+                            # 算 OBV (用 Pandas 寫法，絕不報錯)
+                            df_tech['Direction'] = df_tech['Close'].diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
+                            df_tech['OBV'] = (df_tech['Volume'] * df_tech['Direction']).cumsum()
+                            obv_current = df_tech['OBV'].iloc[-1]
+                            obv_ma20 = df_tech['OBV'].rolling(window=20).mean().iloc[-1]
+                            
+                            # 算量價
+                            vol_1 = df_tech['Volume'].iloc[-1]
+                            vol_5ma = df_tech['Volume'].tail(5).mean()
+                            
+                            # 抓本益比
+                            pe_val = info.get('trailingPE', 0)
+                            
+                            chip_details = []
+                            # 判斷 1: 量能換手
+                            if vol_1 > vol_5ma:
+                                chip_details.append("✅ **【帶量突破】**：今日成交量大於 5 日均量。代表有真實的資金(子彈)推升股價，突破有效度高。")
+                            else:
+                                chip_details.append("⚠️ **【無量上漲】**：今日成交量低於 5 日均量。股價上漲但缺乏資金追捧，慎防「誘多假突破」。")
+                                
+                            # 判斷 2: OBV 主力吸籌
+                            if obv_current > obv_ma20:
+                                chip_details.append("✅ **【主力吸籌】**：近期 OBV 能量潮站上均線。代表整體資金呈現「淨流入」，主力可能正在暗中吃貨。")
+                            else:
+                                chip_details.append("⚠️ **【籌碼流失】**：近期 OBV 能量潮跌破均線。代表整體資金呈現「淨流出」，須留意主力拉高出貨。")
+                                
+                            # 判斷 3: 本益比
+                            if pe_val is None or pe_val == 0:
+                                chip_details.append("⚪ **【估值狀態】**：N/A (可能為 ETF 或獲利為負，無本益比數據)。")
+                            elif pe_val < 15:
+                                chip_details.append(f"✅ **【物美價廉】**：本益比約 {pe_val:.1f} 倍。低於 15 倍代表估值便宜，具備長線保護短線的優勢。")
+                            elif pe_val <= 25:
+                                chip_details.append(f"🟡 **【合理區間】**：本益比約 {pe_val:.1f} 倍。市場給予合理評價。")
+                            else:
+                                chip_details.append(f"🔴 **【作夢估值】**：本益比約 {pe_val:.1f} 倍。大於 25 倍代表股價已透支未來獲利，操作須嚴設停損。")
 
-                    # 👉 【右側區塊：AI 操盤導師報告】
-                    with col_right:
-                        st.subheader("🤖 AI 操盤導師深度解析")
-                        st.markdown(clean_output)
-                        
-                except Exception as e:
-                    st.error(f"AI 診斷過程中發生未預期的錯誤。詳細原因：{e}")
+                            # 教學小教室
+                            chip_teaching = "\n\n---\n**💡 導師觀念教學：什麼是 OBV 與 本益比？**\n*   **OBV (能量潮指標)**：把它想像成資金的「水庫」。今天漲，量就加進水庫；今天跌，量就扣除。若股價沒什麼漲，水庫的水位(OBV)卻不斷創新高，代表主力在偷偷倒水進去(吸籌碼)！\n*   **本益比 (P/E)**：代表「買下這家公司，幾年能回本」。本益比 15 倍代表要 15 年回本。數字越小，代表目前股價越便宜。"
+
+                            chip_title = "💰 價量籌碼與基本面雷達"
+                            chip_msg = "\n\n".join(chip_details) + chip_teaching
+                            
+                        except Exception as e:
+                            chip_title = "💰 價量籌碼與基本面雷達 (運算異常)"
+                            chip_msg = f"無法取得完整財報或成交量資料來計算籌碼指標。({e})"
+
+                        with st.expander(chip_title, expanded=False):
+                            st.markdown(chip_msg)
