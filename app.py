@@ -370,8 +370,34 @@ if st.session_state.get('calc_done'):
                         with st.expander(score_title, expanded=True):
                             st.markdown(score_html, unsafe_allow_html=True)
                             
-                        with st.expander("🌡️ 位階溫度計 (籌備中...)", expanded=False):
-                            st.info("未來將在此顯示月線/季線乖離率，協助判斷股價是否過熱。")
+# --- 溫度計運算邏輯 (月線乖離率) ---
+                        try:
+                            # 拿取該檔股票的 20MA (月線) 的最新值
+                            ma20 = df_tech['Close'].rolling(window=20).mean().iloc[-1]
+                            close_price = df_tech['Close'].iloc[-1]
+                            
+                            # 計算乖離率 BIAS: (收盤價 - 月線) / 月線 * 100
+                            bias_20 = ((close_price - ma20) / ma20) * 100
+                            
+                            # 判斷溫度計燈號
+                            if bias_20 > 15:
+                                temp_title = "🌡️ 位階溫度計：🔴 嚴重過熱 (危險)"
+                                temp_msg = f"**月線乖離率：+{bias_20:.2f}%**\n\n股價已大幅噴出偏離月線(20MA)，短線追高面臨極大的獲利了結賣壓風險，建議切勿盲目追價。"
+                            elif bias_20 > 5:
+                                temp_title = "🌡️ 位階溫度計：🟡 動能發散 (強勢)"
+                                temp_msg = f"**月線乖離率：+{bias_20:.2f}%**\n\n股價正處於強勢上漲軌道中，動能強勁。若為波段持股，請嚴守移動停利點。"
+                            elif bias_20 >= -5:
+                                temp_title = "🌡️ 位階溫度計：🟢 安全發動區 (平穩)"
+                                temp_msg = f"**月線乖離率：{bias_20:.2f}%**\n\n股價靠近月線附近，屬於起漲點或盤整突破區，此位階進場風險利潤比(賠率)最佳。"
+                            else:
+                                temp_title = "🌡️ 位階溫度計：❄️ 跌深反彈區 (弱勢)"
+                                temp_msg = f"**月線乖離率：{bias_20:.2f}%**\n\n股價落後大盤或處於空頭反彈，操作難度高，建議觀望或搶短即跑。"
+                        except:
+                            temp_title = "🌡️ 位階溫度計：⚪ 資料不足"
+                            temp_msg = "歷史資料不足 20 天，無法計算月線乖離率。"
+
+                        with st.expander(temp_title, expanded=False):
+                            st.markdown(temp_msg)
                             
                         with st.expander("💰 籌碼與基本面 (籌備中...)", expanded=False):
                             st.info("未來將在此顯示法人買賣超、本益比河流圖等核心數據。")
