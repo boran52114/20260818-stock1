@@ -7,6 +7,10 @@ import google.generativeai as genai
 # ================= 網頁設定 =================
 st.set_page_config(page_title="台股波段多空篩選器", page_icon="📈", layout="wide")
 
+# ================= 雲端資料庫設定 =================
+GAS_CHIP_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTHRZ3lb6xhRTG9uINlzoiMjlSrqQExX9JoGeg5zI7OoPDk1dF5TUguC4Fq_Oge5ALSCHK-fBUGtrx7/pub?gid=0&single=true&output=csv"
+GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwnswqqpmrAA3CZI4V8vzsfN0X8PLL4_9Y47f6Csz3pMxyQW3iQteXKegrQnaWZmjL9/exec"
+
 # ================= AI 設定與自動探測 =================
 HAS_AI = False
 AI_MODEL_NAME = ""
@@ -59,27 +63,38 @@ def get_tw_stock_info():
 def download_stock_data(tickers):
     return yf.download(tickers, period="6mo", group_by="ticker", threads=True, progress=False)
 
-# ★ 新增：讀取雲端 GAS 籌碼資料
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_institutional_chips():
-    url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTHRZ3lb6xhRTG9uINlzoiMjlSrqQExX9JoGeg5zI7OoPDk1dF5TUguC4Fq_Oge5ALSCHK-fBUGtrx7/pub?gid=0&single=true&output=csv"
     try:
-        df = pd.read_csv(url)
+        df = pd.read_csv(GAS_CHIP_CSV_URL)
         df['證券代號'] = df['證券代號'].astype(str)
         return df
     except Exception:
         return pd.DataFrame()
 
-# ★ 新增：模糊比對抓取籌碼數值並轉成張數
 def extract_chip_value(row, keyword):
     for col in row.index:
         if keyword in col and '買賣超' in col:
             try:
                 val = str(row[col]).replace(',', '').strip()
-                return int(val) // 1000 # 換算成張
+                return int(val) // 1000 
             except:
                 pass
     return 0
+
+# ★ 新增：寫入歷史戰績追蹤表
+def save_to_tracking_sheet(date_str, ticker, name, entry_price):
+    payload = {
+        "date": date_str,
+        "ticker": ticker,
+        "name": name,
+        "entry_price": entry_price
+    }
+    try:
+        res = requests.post(GAS_WEB_APP_URL, json=payload)
+        return res.status_code == 200
+    except:
+        return False
 
 def render_html_table(data_list):
     if not data_list: return "<div style='font-size: 16px; margin-top: 10px; color: #666;'>本日無符合條件標的（或無波動大於 3% 之標的）</div>"
@@ -91,16 +106,12 @@ def render_html_table(data_list):
     return html + "</table></div>"
 
 def calculate_kline_score(df_stock):
-    if len(df_stock) < 5:
-        return 30, "<li>資料不足，僅給予基礎突破分 (+30)</li>"
-        
+    if len(df_stock) < 5: return 30, "<li>資料不足，僅給予基礎突破分 (+30)</li>"
     score = 30
     details = ["<li><b>基礎動能</b>：符合波段轉折與 5MA 突破，具備基本多方架構 (+30分)</li>"]
-    
     O1, H1, L1, C1, V1 = df_stock['Open'].iloc[-1], df_stock['High'].iloc[-1], df_stock['Low'].iloc[-1], df_stock['Close'].iloc[-1], df_stock['Volume'].iloc[-1]
     O2, H2, L2, C2, V2 = df_stock['Open'].iloc[-2], df_stock['High'].iloc[-2], df_stock['Low'].iloc[-2], df_stock['Close'].iloc[-2], df_stock['Volume'].iloc[-2]
     O3, H3, L3, C3 = df_stock['Open'].iloc[-3], df_stock['High'].iloc[-3], df_stock['Low'].iloc[-3], df_stock['Close'].iloc[-3]
-    
     vol_5ma = df_stock['Volume'].tail(5).mean()
 
     if V1 > vol_5ma * 1.5:
@@ -275,17 +286,29 @@ if st.session_state.get('calc_done'):
         stock_options = {row['代號名稱']: row for row in all_filtered_stocks}
         selected_stock_name = st.selectbox("請選擇一檔標的，讓 AI 進行深度診斷：", list(stock_options.keys()))
         
-        if st.button(f"✨ 開始診斷 {selected_stock_name}", type="primary"):
+        # ★ 新增：將按鈕拆分，左邊是診斷，右邊是存入追蹤表
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            do_diagnose = st.button(f"✨ 開始診斷 {selected_stock_name}", type="primary", use_container_width=True)
+        with col_btn2:
+            if st.button(f"💾 將此標的寫入【戰績追蹤表】", use_container_width=True):
+                with st.spinner("正在寫入 Google 雲端資料庫..."):
+                    target = stock_options[selected_stock_name]
+                    ok = save_to_tracking_sheet(selected_date, target['代碼'], target['代號名稱'], target['收盤價'])
+                    if ok:
+                        st.success(f"✅ 成功將 {target['代號名稱']} 寫入雲端！(請至你的 Google Sheets 查看)")
+                    else:
+                        st.error("寫入失敗，請檢查網路連線。")
+        
+        if do_diagnose:
             target_stock = stock_options[selected_stock_name]
             
-            with st.spinner(f"AI 正在為您計算技術指標並生成詳細報告中... (這需要深度思考，約需 15~20 秒)"):
+            with st.spinner(f"AI 正在為您計算技術指標並生成詳細報告中... (約需 15~20 秒)"):
                 try:
-                    # 抓取 K 線與財報資料
                     ticker_obj = yf.Ticker(target_stock['代碼'])
                     df_tech = ticker_obj.history(period="3mo")
                     info = ticker_obj.info
                     
-                    # 抓取雲端 GAS 籌碼資料
                     chip_df = get_institutional_chips()
                     foreign_lots, trust_lots, dealer_lots = 0, 0, 0
                     if not chip_df.empty:
@@ -299,7 +322,6 @@ if st.session_state.get('calc_done'):
                     
                     today_open, today_high, today_low, today_close = 0, 0, 0, 0
                     if not df_tech.empty and len(df_tech) > 26:
-                        # K線實體資訊 (傳給AI判斷用)
                         today_open = round(df_tech['Open'].iloc[-1], 2)
                         today_high = round(df_tech['High'].iloc[-1], 2)
                         today_low = round(df_tech['Low'].iloc[-1], 2)
@@ -348,7 +370,7 @@ if st.session_state.get('calc_done'):
                     except Exception:
                         pass
                         
-                    # ★ 深度指令：完美融合 K線與籌碼，逼迫 AI 寫詳細長文教學
+                    # ★ 深度指令：完美融合 K線與籌碼，並強制要求 AI 思考「時間差邏輯」！
                     prompt = f"""
                     你是一位精通台股量化交易的資深操盤導師。
                     請為我撰寫一份「極度詳細、具備深度教學意義」的繁體中文分析報告。拒絕任何簡短的條列式敷衍。
@@ -357,16 +379,19 @@ if st.session_state.get('calc_done'):
                     名稱：{selected_stock_name}
                     今日K線數據：開盤 {today_open} / 最高 {today_high} / 最低 {today_low} / 收盤 {today_close}
                     今日成交量：{volume}
-                    今日三大法人動向：外資 {foreign_lots} 張，投信 {trust_lots} 張，自營商 {dealer_lots} 張
+                    最近一次盤後三大法人動向：外資 {foreign_lots} 張，投信 {trust_lots} 張，自營商 {dealer_lots} 張
                     波段第一低點：{target_stock['第一低']}，第二低點：{target_stock['第二低']}
                     波段第一高點：{target_stock['第一高']}，第二高點：{target_stock['第二高']}
                     本益比 (P/E)：{pe_ratio} / 股價淨值比 (P/B)：{pb_ratio}
                     今日真實技術指標：{tech_data_str}
                     近期新聞：\n{news_titles}
 
+                    【時間差邏輯重要提醒】
+                    請特別注意：我們提供的法人籌碼可能是「前一交易日的盤後數據」，而 K 線代表的是「今日的即時突破」。請在教學中利用這點，教導新手如何看懂「法人提早卡位」與「今日技術面發動」的共振關係。
+
                     【必須包含的4個段落】(每個段落請務必深入探討，字數要充實)：
                     ### 1. 📊 籌碼與K線結構深度解析
-                    (必須結合今日提供的「K線型態數據」、「大於3%的實體動能」，以及「三大法人買賣超張數」進行深度交叉比對！詳細推演主力籌碼是否安定？法人是真突破買進還是趁著長紅K拉高出貨？並教學新手如何看懂法人籌碼與K線的搭配關係。)
+                    (必須結合今日提供的「K線型態數據」、「大於3%的實體動能」，以及「三大法人買賣超張數」進行深度交叉比對！請務必利用「昨日籌碼提早卡位」與「今日技術面突破」的時間差邏輯，詳細推演主力籌碼是否安定？法人是真突破買進還是趁著長紅K拉高出貨？)
                     
                     ### 2. 📰 基本面與市場題材評估
                     (深入解讀本益比是否合理，以及近期新聞對股價推升的實質幫助。若是ETF則詳述其特性。)
@@ -381,7 +406,7 @@ if st.session_state.get('calc_done'):
                     response = model.generate_content(prompt)
                     raw_output = response.text
                     
-                    # ★ 物理截斷術 (Python 後處理)
+                    # 物理截斷術
                     start_marker = "### 1."
                     if start_marker in raw_output:
                         clean_output = raw_output[raw_output.find(start_marker):]
@@ -400,7 +425,6 @@ if st.session_state.get('calc_done'):
                     with col_left:
                         st.subheader("📊 客觀數據儀表板")
                         
-                        # --- 1. K線與型態評分 ---
                         if score_val >= 60:
                             score_title = f"🟢 綜合評分：{score_val} 分 (強勢)"
                         elif score_val >= 30:
@@ -411,7 +435,6 @@ if st.session_state.get('calc_done'):
                         with st.expander(score_title, expanded=True):
                             st.markdown(score_html, unsafe_allow_html=True)
                             
-                        # --- 2. 溫度計運算邏輯 (月線乖離率) ---
                         try:
                             ma20 = df_tech['Close'].rolling(window=20).mean().iloc[-1]
                             close_price = df_tech['Close'].iloc[-1]
@@ -438,7 +461,6 @@ if st.session_state.get('calc_done'):
                         with st.expander(temp_title, expanded=False):
                             st.markdown(temp_msg)
                             
-                        # --- 3. 籌碼與基本面運算邏輯 (結合三大法人) ---
                         try:
                             df_tech['Direction'] = df_tech['Close'].diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
                             df_tech['OBV'] = (df_tech['Volume'] * df_tech['Direction']).cumsum()
@@ -449,8 +471,8 @@ if st.session_state.get('calc_done'):
                             pe_val = info.get('trailingPE', 0)
                             
                             chip_details = []
-                            # ★ 加入三大法人直觀看板
-                            chip_details.append("🏦 **【今日三大法人動向】**")
+                            # ★ 標題已經修改：註明時間差
+                            chip_details.append("🏦 **【最新法人動向 (盤中為昨日數據/盤後為今日數據)】**")
                             chip_details.append(f"* 外資：{'🔴 買超' if foreign_lots > 0 else '🟢 賣超' if foreign_lots < 0 else '⚪ 平'} {foreign_lots} 張")
                             chip_details.append(f"* 投信：{'🔴 買超' if trust_lots > 0 else '🟢 賣超' if trust_lots < 0 else '⚪ 平'} {trust_lots} 張")
                             chip_details.append(f"* 自營商：{'🔴 買超' if dealer_lots > 0 else '🟢 賣超' if dealer_lots < 0 else '⚪ 平'} {dealer_lots} 張\n---")
