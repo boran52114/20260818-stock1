@@ -59,6 +59,28 @@ def get_tw_stock_info():
 def download_stock_data(tickers):
     return yf.download(tickers, period="6mo", group_by="ticker", threads=True, progress=False)
 
+# ★ 新增：讀取雲端 GAS 籌碼資料
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_institutional_chips():
+    url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTHRZ3lb6xhRTG9uINlzoiMjlSrqQExX9JoGeg5zI7OoPDk1dF5TUguC4Fq_Oge5ALSCHK-fBUGtrx7/pub?gid=0&single=true&output=csv"
+    try:
+        df = pd.read_csv(url)
+        df['證券代號'] = df['證券代號'].astype(str)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+# ★ 新增：模糊比對抓取籌碼數值並轉成張數
+def extract_chip_value(row, keyword):
+    for col in row.index:
+        if keyword in col and '買賣超' in col:
+            try:
+                val = str(row[col]).replace(',', '').strip()
+                return int(val) // 1000 # 換算成張
+            except:
+                pass
+    return 0
+
 def render_html_table(data_list):
     if not data_list: return "<div style='font-size: 16px; margin-top: 10px; color: #666;'>本日無符合條件標的（或無波動大於 3% 之標的）</div>"
     html = "<div style='overflow-x: auto;'><table style='width: 100%; min-width: 600px; border-collapse: collapse; font-size: 16px; text-align: center; font-family: sans-serif;'>"
@@ -258,11 +280,31 @@ if st.session_state.get('calc_done'):
             
             with st.spinner(f"AI 正在為您計算技術指標並生成詳細報告中... (這需要深度思考，約需 15~20 秒)"):
                 try:
+                    # 抓取 K 線與財報資料
                     ticker_obj = yf.Ticker(target_stock['代碼'])
                     df_tech = ticker_obj.history(period="3mo")
                     info = ticker_obj.info
                     
+                    # 抓取雲端 GAS 籌碼資料
+                    chip_df = get_institutional_chips()
+                    foreign_lots, trust_lots, dealer_lots = 0, 0, 0
+                    if not chip_df.empty:
+                        target_code = target_stock['代碼'].split('.')[0]
+                        stock_chip = chip_df[chip_df['證券代號'] == target_code]
+                        if not stock_chip.empty:
+                            row_chip = stock_chip.iloc[0]
+                            foreign_lots = extract_chip_value(row_chip, '外')
+                            trust_lots = extract_chip_value(row_chip, '投信')
+                            dealer_lots = extract_chip_value(row_chip, '自營')
+                    
+                    today_open, today_high, today_low, today_close = 0, 0, 0, 0
                     if not df_tech.empty and len(df_tech) > 26:
+                        # K線實體資訊 (傳給AI判斷用)
+                        today_open = round(df_tech['Open'].iloc[-1], 2)
+                        today_high = round(df_tech['High'].iloc[-1], 2)
+                        today_low = round(df_tech['Low'].iloc[-1], 2)
+                        today_close = round(df_tech['Close'].iloc[-1], 2)
+
                         delta = df_tech['Close'].diff()
                         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
                         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -306,15 +348,16 @@ if st.session_state.get('calc_done'):
                     except Exception:
                         pass
                         
-                    # ★ 深度指令：逼迫 AI 寫詳細長文，並具備教學邏輯
+                    # ★ 深度指令：完美融合 K線與籌碼，逼迫 AI 寫詳細長文教學
                     prompt = f"""
                     你是一位精通台股量化交易的資深操盤導師。
                     請為我撰寫一份「極度詳細、具備深度教學意義」的繁體中文分析報告。拒絕任何簡短的條列式敷衍。
 
                     【標的真實數據】
                     名稱：{selected_stock_name}
-                    當前收盤價：{target_stock['收盤價']}
+                    今日K線數據：開盤 {today_open} / 最高 {today_high} / 最低 {today_low} / 收盤 {today_close}
                     今日成交量：{volume}
+                    今日三大法人動向：外資 {foreign_lots} 張，投信 {trust_lots} 張，自營商 {dealer_lots} 張
                     波段第一低點：{target_stock['第一低']}，第二低點：{target_stock['第二低']}
                     波段第一高點：{target_stock['第一高']}，第二高點：{target_stock['第二高']}
                     本益比 (P/E)：{pe_ratio} / 股價淨值比 (P/B)：{pb_ratio}
@@ -322,8 +365,8 @@ if st.session_state.get('calc_done'):
                     近期新聞：\n{news_titles}
 
                     【必須包含的4個段落】(每個段落請務必深入探討，字數要充實)：
-                    ### 1. 📊 籌碼與價量結構深度解析
-                    (結合今日大於3%的突破漲幅與成交量，詳細推演主力籌碼是否安定，並教學新手如何看懂量價關係。)
+                    ### 1. 📊 籌碼與K線結構深度解析
+                    (必須結合今日提供的「K線型態數據」、「大於3%的實體動能」，以及「三大法人買賣超張數」進行深度交叉比對！詳細推演主力籌碼是否安定？法人是真突破買進還是趁著長紅K拉高出貨？並教學新手如何看懂法人籌碼與K線的搭配關係。)
                     
                     ### 2. 📰 基本面與市場題材評估
                     (深入解讀本益比是否合理，以及近期新聞對股價推升的實質幫助。若是ETF則詳述其特性。)
@@ -338,7 +381,7 @@ if st.session_state.get('calc_done'):
                     response = model.generate_content(prompt)
                     raw_output = response.text
                     
-                    # ★ 物理截斷術 (Python 後處理)：強制把 AI 前面的英文草稿切除！
+                    # ★ 物理截斷術 (Python 後處理)
                     start_marker = "### 1."
                     if start_marker in raw_output:
                         clean_output = raw_output[raw_output.find(start_marker):]
@@ -346,14 +389,11 @@ if st.session_state.get('calc_done'):
                         clean_output = raw_output 
                     
                     st.success("✨ 診斷完成！已為您生成專屬戰情室報表：")
-                    
-                    # --- 呼叫我們的 K 線評分引擎 ---
                     score_val, score_html = calculate_kline_score(df_tech)
                     
                     st.write("---")
                     
 # ================= 戰情室左右分欄設計 =================
-                    # 左欄佔 30% 寬度，右欄佔 70% 寬度
                     col_left, col_right = st.columns([3, 7])
                     
                     # 👈 【左側區塊：客觀數據戰情室】
@@ -377,7 +417,7 @@ if st.session_state.get('calc_done'):
                             close_price = df_tech['Close'].iloc[-1]
                             bias_20 = ((close_price - ma20) / ma20) * 100
                             
-                            bias_teaching = "\n\n---\n**💡 導師觀念教學：什麼是乖離率 (BIAS)？**\n乖離率就像是「股價與均線之間的橡皮筋」。20MA(月線)代表過去一個月市場的平均成本。當股價漲太快、偏離月線太遠時，橡皮筋拉得太緊就容易產生「回檔的引力」；反之則會產生反彈。學會看乖離率，能幫你避開「買在最高點」的散戶悲劇。"
+                            bias_teaching = "\n\n---\n**💡 導師觀念教學：什麼是乖離率 (BIAS)？**\n乖離率就像是「股價與均線之間的橡皮筋」。20MA(月線)代表過去一個月市場的平均成本。當股價漲太快、偏離月線太遠時，橡皮筋拉得太緊就容易產生「回檔的引力」；反之則會產生反彈。"
                             
                             if bias_20 > 15:
                                 temp_title = "🌡️ 位階溫度計：🔴 嚴重過熱 (危險)"
@@ -398,45 +438,48 @@ if st.session_state.get('calc_done'):
                         with st.expander(temp_title, expanded=False):
                             st.markdown(temp_msg)
                             
-                        # --- 3. 籌碼與基本面運算邏輯 (OBV + 估值) ---
+                        # --- 3. 籌碼與基本面運算邏輯 (結合三大法人) ---
                         try:
                             df_tech['Direction'] = df_tech['Close'].diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
                             df_tech['OBV'] = (df_tech['Volume'] * df_tech['Direction']).cumsum()
                             obv_current = df_tech['OBV'].iloc[-1]
                             obv_ma20 = df_tech['OBV'].rolling(window=20).mean().iloc[-1]
-                            
                             vol_1 = df_tech['Volume'].iloc[-1]
                             vol_5ma = df_tech['Volume'].tail(5).mean()
                             pe_val = info.get('trailingPE', 0)
                             
                             chip_details = []
+                            # ★ 加入三大法人直觀看板
+                            chip_details.append("🏦 **【今日三大法人動向】**")
+                            chip_details.append(f"* 外資：{'🔴 買超' if foreign_lots > 0 else '🟢 賣超' if foreign_lots < 0 else '⚪ 平'} {foreign_lots} 張")
+                            chip_details.append(f"* 投信：{'🔴 買超' if trust_lots > 0 else '🟢 賣超' if trust_lots < 0 else '⚪ 平'} {trust_lots} 張")
+                            chip_details.append(f"* 自營商：{'🔴 買超' if dealer_lots > 0 else '🟢 賣超' if dealer_lots < 0 else '⚪ 平'} {dealer_lots} 張\n---")
+                            
                             if vol_1 > vol_5ma:
-                                chip_details.append("✅ **【帶量突破】**：今日成交量大於 5 日均量。代表有真實的資金(子彈)推升股價，突破有效度高。")
+                                chip_details.append("✅ **【帶量突破】**：今日成交量大於 5 日均量。代表有真實的資金推升股價，突破有效度高。")
                             else:
                                 chip_details.append("⚠️ **【無量上漲】**：今日成交量低於 5 日均量。股價上漲但缺乏資金追捧，慎防「誘多假突破」。")
                                 
                             if obv_current > obv_ma20:
-                                chip_details.append("✅ **【主力吸籌】**：近期 OBV 能量潮站上均線。代表整體資金呈現「淨流入」，主力可能正在暗中吃貨。")
+                                chip_details.append("✅ **【主力吸籌】**：近期 OBV 能量潮站上均線。代表整體資金呈現「淨流入」，可能有主力暗中吃貨。")
                             else:
                                 chip_details.append("⚠️ **【籌碼流失】**：近期 OBV 能量潮跌破均線。代表整體資金呈現「淨流出」，須留意主力拉高出貨。")
                                 
                             if pe_val is None or pe_val == 0:
                                 chip_details.append("⚪ **【估值狀態】**：N/A (可能為 ETF 或獲利為負，無本益比數據)。")
                             elif pe_val < 15:
-                                chip_details.append(f"✅ **【物美價廉】**：本益比約 {pe_val:.1f} 倍。低於 15 倍代表估值便宜，具備長線保護短線的優勢。")
+                                chip_details.append(f"✅ **【物美價廉】**：本益比約 {pe_val:.1f} 倍。低於 15 倍代表估值便宜。")
                             elif pe_val <= 25:
                                 chip_details.append(f"🟡 **【合理區間】**：本益比約 {pe_val:.1f} 倍。市場給予合理評價。")
                             else:
                                 chip_details.append(f"🔴 **【作夢估值】**：本益比約 {pe_val:.1f} 倍。大於 25 倍代表股價已透支未來獲利，操作須嚴設停損。")
 
-                            chip_teaching = "\n\n---\n**💡 導師觀念教學：什麼是 OBV 與 本益比？**\n*   **OBV (能量潮指標)**：把它想像成資金的「水庫」。今天漲，量就加進水庫；今天跌，量就扣除。若股價沒什麼漲，水庫的水位(OBV)卻不斷創新高，代表主力在偷偷倒水進去(吸籌碼)！\n*   **本益比 (P/E)**：代表「買下這家公司，幾年能回本」。本益比 15 倍代表要 15 年回本。數字越小，代表目前股價越便宜。"
-
                             chip_title = "💰 價量籌碼與基本面雷達"
-                            chip_msg = "\n\n".join(chip_details) + chip_teaching
+                            chip_msg = "\n\n".join(chip_details)
                             
                         except Exception as e:
                             chip_title = "💰 價量籌碼與基本面雷達 (運算異常)"
-                            chip_msg = f"無法取得完整財報或成交量資料來計算籌碼指標。({e})"
+                            chip_msg = f"無法取得完整資料來計算籌碼指標。({e})"
 
                         with st.expander(chip_title, expanded=False):
                             st.markdown(chip_msg)
