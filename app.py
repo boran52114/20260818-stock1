@@ -3,13 +3,15 @@ import yfinance as yf
 import pandas as pd
 import requests
 import google.generativeai as genai
+from datetime import datetime, timedelta
 
 # ================= 網頁設定 =================
-st.set_page_config(page_title="台股波段多空篩選器", page_icon="📈", layout="wide")
+st.set_page_config(page_title="台股波段多空篩選器 V2", page_icon="📈", layout="wide")
 
 # ================= 雲端資料庫設定 =================
 GAS_CHIP_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTHRZ3lb6xhRTG9uINlzoiMjlSrqQExX9JoGeg5zI7OoPDk1dF5TUguC4Fq_Oge5ALSCHK-fBUGtrx7/pub?gid=0&single=true&output=csv"
 GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwnswqqpmrAA3CZI4V8vzsfN0X8PLL4_9Y47f6Csz3pMxyQW3iQteXKegrQnaWZmjL9/exec"
+GAS_TRACKING_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTHRZ3lb6xhRTG9uINlzoiMjlSrqQExX9JoGeg5zI7OoPDk1dF5TUguC4Fq_Oge5ALSCHK-fBUGtrx7/pub?gid=1643943802&single=true&output=csv"
 
 # ================= AI 設定與自動探測 =================
 HAS_AI = False
@@ -37,26 +39,22 @@ if "GEMINI_API_KEY" in st.secrets:
 @st.cache_data(ttl=86400)
 def get_tw_stock_info():
     stock_dict = {}
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
         res_twse = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", headers=headers, timeout=15)
         if res_twse.status_code == 200:
             for item in res_twse.json():
                 code = item['Code']
-                if len(code) == 4 or code.startswith('00'): 
-                    stock_dict[code + '.TW'] = item['Name']
-        
+                if len(code) == 4 or code.startswith('00'): stock_dict[code + '.TW'] = item['Name']
         res_tpex = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", headers=headers, timeout=15)
         if res_tpex.status_code == 200:
             for item in res_tpex.json():
                 code = item['SecuritiesCompanyCode']
-                if len(code) == 4 or code.startswith('00'): 
-                    stock_dict[code + '.TWO'] = item['CompanyName']
+                if len(code) == 4 or code.startswith('00'): stock_dict[code + '.TWO'] = item['CompanyName']
     except Exception:
         pass 
-
     if len(stock_dict) < 100:
-        stock_dict = {'2330.TW': '台積電', '2317.TW': '鴻海', '2454.TW': '聯發科', '0050.TW': '元大台灣50', '00878.TW': '國泰永續高股息', '00929.TW': '復華台灣科技優息'}
+        stock_dict = {'2330.TW': '台積電', '2317.TW': '鴻海', '2454.TW': '聯發科', '0050.TW': '元大台灣50'}
     return stock_dict
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -72,6 +70,14 @@ def get_institutional_chips():
     except Exception:
         return pd.DataFrame()
 
+@st.cache_data(ttl=600, show_spinner=False)
+def get_tracking_data():
+    try:
+        df = pd.read_csv(GAS_TRACKING_CSV_URL)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
 def extract_chip_value(row, keyword):
     for col in row.index:
         if keyword in col and '買賣超' in col:
@@ -82,13 +88,10 @@ def extract_chip_value(row, keyword):
                 pass
     return 0
 
-# ★ 新增：寫入歷史戰績追蹤表
-def save_to_tracking_sheet(date_str, ticker, name, entry_price):
+def save_to_tracking_sheet(date_str, ticker, name, direction, entry_price):
     payload = {
-        "date": date_str,
-        "ticker": ticker,
-        "name": name,
-        "entry_price": entry_price
+        "date": date_str, "ticker": ticker, "name": name, 
+        "direction": direction, "entry_price": entry_price
     }
     try:
         res = requests.post(GAS_WEB_APP_URL, json=payload)
@@ -97,419 +100,311 @@ def save_to_tracking_sheet(date_str, ticker, name, entry_price):
         return False
 
 def render_html_table(data_list):
-    if not data_list: return "<div style='font-size: 16px; margin-top: 10px; color: #666;'>本日無符合條件標的（或無波動大於 3% 之標的）</div>"
-    html = "<div style='overflow-x: auto;'><table style='width: 100%; min-width: 600px; border-collapse: collapse; font-size: 16px; text-align: center; font-family: sans-serif;'>"
-    html += "<tr style='background-color: #f0f2f6; border-bottom: 2px solid #ddd;'><th style='padding: 10px;'>代號名稱</th><th style='padding: 10px;'>收盤價</th><th style='padding: 10px;'>漲跌幅</th><th style='padding: 10px;'>第一低</th><th style='padding: 10px;'>第二低</th><th style='padding: 10px;'>第一高</th><th style='padding: 10px;'>第二高</th></tr>"
+    if not data_list: return "<div style='color: #666;'>本日無符合條件標的</div>"
+    html = "<div style='overflow-x: auto;'><table style='width: 100%; border-collapse: collapse; font-size: 15px; text-align: center;'>"
+    html += "<tr style='background-color: #f0f2f6; border-bottom: 2px solid #ddd;'><th style='padding: 8px;'>代號名稱</th><th style='padding: 8px;'>收盤價</th><th style='padding: 8px;'>漲跌幅</th><th style='padding: 8px;'>第一低</th><th style='padding: 8px;'>第二低</th><th style='padding: 8px;'>第一高</th><th style='padding: 8px;'>第二高</th></tr>"
     for row in data_list:
         color = "#ff4b4b" if "+" in row['漲跌幅'] else "#09ab3b" if "-" in row['漲跌幅'] else "black"
-        html += f"<tr style='border-bottom: 1px solid #eee;'><td style='padding: 8px;'><b>{row['代號名稱']}</b></td><td style='padding: 8px;'>{row['收盤價']}</td><td style='padding: 8px; color: {color}; font-weight: bold;'>{row['漲跌幅']}</td><td style='padding: 8px;'>{row['第一低']}</td><td style='padding: 8px;'>{row['第二低']}</td><td style='padding: 8px;'>{row['第一高']}</td><td style='padding: 8px;'>{row['第二高']}</td></tr>"
+        html += f"<tr style='border-bottom: 1px solid #eee;'><td style='padding: 6px;'><b>{row['代號名稱']}</b></td><td>{row['收盤價']}</td><td style='color: {color}; font-weight: bold;'>{row['漲跌幅']}</td><td>{row['第一低']}</td><td>{row['第二低']}</td><td>{row['第一高']}</td><td>{row['第二高']}</td></tr>"
     return html + "</table></div>"
 
 def calculate_kline_score(df_stock):
-    if len(df_stock) < 5: return 30, "<li>資料不足，僅給予基礎突破分 (+30)</li>"
+    if len(df_stock) < 5: return 30, "<li>資料不足，給予基礎分 (+30)</li>"
     score = 30
-    details = ["<li><b>基礎動能</b>：符合波段轉折與 5MA 突破，具備基本多方架構 (+30分)</li>"]
-    O1, H1, L1, C1, V1 = df_stock['Open'].iloc[-1], df_stock['High'].iloc[-1], df_stock['Low'].iloc[-1], df_stock['Close'].iloc[-1], df_stock['Volume'].iloc[-1]
-    O2, H2, L2, C2, V2 = df_stock['Open'].iloc[-2], df_stock['High'].iloc[-2], df_stock['Low'].iloc[-2], df_stock['Close'].iloc[-2], df_stock['Volume'].iloc[-2]
-    O3, H3, L3, C3 = df_stock['Open'].iloc[-3], df_stock['High'].iloc[-3], df_stock['Low'].iloc[-3], df_stock['Close'].iloc[-3]
+    details = ["<li><b>基礎動能</b>：符合波段轉折與 5MA 突破 (+30分)</li>"]
+    O1, C1, V1 = df_stock['Open'].iloc[-1], df_stock['Close'].iloc[-1], df_stock['Volume'].iloc[-1]
+    V2 = df_stock['Volume'].iloc[-2]
     vol_5ma = df_stock['Volume'].tail(5).mean()
-
     if V1 > vol_5ma * 1.5:
-        score += 20
-        details.append("<li><b>量能爆發</b>：今日爆量上漲，超過 5 日均量 1.5 倍，主力介入明顯 (+20分)</li>")
+        score += 20; details.append("<li><b>量能爆發</b>：爆量上漲，主力介入 (+20分)</li>")
     elif V1 < V2 and C1 > O1:
-        score -= 20
-        details.append("<li><span style='color:red;'><b>量價背離</b>：今日實體突破但成交量卻萎縮，慎防假突破誘多 (-20分)</span></li>")
+        score -= 20; details.append("<li><span style='color:red;'><b>量價背離</b>：實體突破但量縮，防假突破 (-20分)</span></li>")
+    return max(-100, min(100, score)), f"<ul>{''.join(details)}</ul>"
 
-    if C2 < O2 and C1 > O1 and O1 < C2 and C1 > O2:
-        score += 30
-        details.append("<li><b>多方吞噬</b>：強力反轉型態，今日紅 K 徹底吃掉昨日賣壓 (+30分)</li>")
-    elif C2 < O2 and C1 > O1 and O1 < L2 and C1 > ((O2 + C2) / 2):
-        score += 20
-        details.append("<li><b>貫穿線</b>：主力洗盤後強拉，收復昨日過半跌幅 (+20分)</li>")
-    elif C3 < O3 and abs(C2 - O2) < (H2 - L2) * 0.3 and C1 > O1 and C1 > ((O3 + C3) / 2):
-        score += 30
-        details.append("<li><b>晨星型態</b>：極強烈的波段起漲反轉訊號 (+30分)</li>")
-    elif C1 > O1:
-        body = C1 - O1
-        lower_shadow = O1 - L1
-        upper_shadow = H1 - C1
-        if lower_shadow > body * 2 and upper_shadow < body * 0.5:
-            score += 10
-            details.append("<li><b>槌子線</b>：下方出現長下影線，顯示有低接買盤防守 (+10分)</li>")
-
-    if C1 > O1:
-        body = C1 - O1
-        upper_shadow = H1 - C1
-        if upper_shadow > body * 2:
-            score -= 30
-            details.append("<li><span style='color:red;'><b>流星線/長上影線</b>：突破日遭遇極大上檔賣壓，主力可能拉高出貨，極度危險 (-30分)</span></li>")
-            
-    score = max(-100, min(100, score))
-    details_html = f"<ul>{''.join(details)}</ul>"
-    return score, details_html
-
-# ================= 主程式區 =================
-st.title("📈 台股波段多空篩選器 & AI 診斷")
-st.write("條件：道氏理論波段轉折 + 突破/跌破 5MA + **當日實體動能 (漲跌幅達 3% 以上)**")
-
-if 'calc_done' not in st.session_state:
-    st.session_state['calc_done'] = False
-    st.session_state['results'] = {}
-    st.session_state['dates'] = []
-    st.session_state['valid_count'] = 0
-
-if st.button("🚀 開始篩選 (一鍵執行)", use_container_width=True, type="primary"):
-    with st.spinner("正在獲取台股全市場代碼 (含個股與ETF)..."):
-        stock_info = get_tw_stock_info()
-        all_tickers = list(stock_info.keys())
+def generate_ai_report(prompt_text, score_val, score_html, df_tech, info, foreign_lots, trust_lots, dealer_lots):
+    try:
+        response = model.generate_content(prompt_text)
+        raw_output = response.text
+        clean_output = raw_output[raw_output.find("### 1."):] if "### 1." in raw_output else raw_output
         
-    with st.spinner(f"正在下載或讀取 {len(all_tickers)} 檔標的歷史資料，請耐心等候..."):
-        try:
-            data = download_stock_data(all_tickers)
-        except Exception:
-            st.error("下載資料發生錯誤，請稍後再試。")
-            st.stop()
-            
-    valid_dates = data.index.dropna().unique().sort_values()[-5:]
-    date_strs = [d.strftime("%Y-%m-%d") for d in valid_dates]
-    results_by_date = {d: {'up': [], 'down': []} for d in date_strs}
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    total_stocks = len(all_tickers)
-    valid_stock_count = 0 
-    
-    for idx, ticker in enumerate(all_tickers):
-        if idx % 50 == 0:
-            progress_bar.progress((idx + 1) / total_stocks)
-            status_text.text(f"正在運算中: {idx+1} / {total_stocks} 檔...")
-            
-        try:
-            df_full = data[ticker].copy() if len(all_tickers) > 1 else data.copy()
-            df_full = df_full.dropna()
-            
-            if isinstance(df_full.columns, pd.MultiIndex): df_full.columns = df_full.columns.droplevel(1)
-            if len(df_full) < 15: continue
-            valid_stock_count += 1 
-                
-            df_full['5MA'] = df_full['Close'].rolling(window=5).mean()
-            df_full = df_full.dropna()
-            df_full['Position'] = df_full.apply(lambda row: 1 if row['Close'] > row['5MA'] else -1, axis=1)
-            
-            for d_idx, target_date in enumerate(valid_dates):
-                date_str = date_strs[d_idx]
-                if target_date not in df_full.index: continue
-                    
-                loc = df_full.index.get_loc(target_date)
-                if isinstance(loc, slice) or isinstance(loc, pd.Series): loc = df_full.index.get_indexer([target_date])[0]
-                df = df_full.iloc[:loc+1]
-                if len(df) < 10: continue
-                
-                waves = []
-                current_pos = df['Position'].iloc[0]
-                current_high, current_low = df['High'].iloc[0], df['Low'].iloc[0]
-
-                for i in range(1, len(df)):
-                    pos, high, low = df['Position'].iloc[i], df['High'].iloc[i], df['Low'].iloc[i]
-                    if pos == current_pos:
-                        if high > current_high: current_high = high
-                        if low < current_low: current_low = low
-                    else:
-                        waves.append({'type': 'above' if current_pos == 1 else 'below', 'high': current_high, 'low': current_low})
-                        current_pos, current_high, current_low = pos, high, low
-
-                waves.append({'type': 'above' if current_pos == 1 else 'below', 'high': current_high, 'low': current_low})
-
-                today_pos, yest_pos = df['Position'].iloc[-1], df['Position'].iloc[-2]
-                today_close, yest_close = df['Close'].iloc[-1], df['Close'].iloc[-2]
-                
-                pct_change_val = ((today_close - yest_close) / yest_close) * 100
-                pct_str = f"+{pct_change_val:.2f}%" if pct_change_val > 0 else f"{pct_change_val:.2f}%"
-
-                stock_code = ticker.split('.')[0]
-                stock_name = stock_info.get(ticker, "")
-                full_name = f"{stock_code} {stock_name}"
-                
-                if today_pos == 1 and yest_pos == -1 and pct_change_val >= 3.0 and len(waves) >= 5:
-                    low_2, high_2, low_1, high_1 = waves[-2]['low'], waves[-3]['high'], waves[-4]['low'], waves[-5]['high']
-                    if high_2 >= high_1 and low_2 >= low_1:
-                        results_by_date[date_str]['up'].append({
-                            "代碼": ticker, "代號名稱": full_name, "收盤價": round(today_close, 2), "漲跌幅": pct_str,
-                            "第一低": round(low_1, 2), "第二低": round(low_2, 2), "第一高": round(high_1, 2), "第二高": round(high_2, 2)
-                        })
-
-                elif today_pos == -1 and yest_pos == 1 and pct_change_val <= -3.0 and len(waves) >= 5:
-                    high_2, low_2, high_1, low_1 = waves[-2]['high'], waves[-3]['low'], waves[-4]['high'], waves[-5]['low']
-                    if high_2 <= high_1 and low_2 <= low_1:
-                        results_by_date[date_str]['down'].append({
-                            "代碼": ticker, "代號名稱": full_name, "收盤價": round(today_close, 2), "漲跌幅": pct_str,
-                            "第一低": round(low_1, 2), "第二低": round(low_2, 2), "第一高": round(high_1, 2), "第二高": round(high_2, 2)
-                        })
-        except Exception:
-            continue
-            
-    st.session_state['results'] = results_by_date
-    st.session_state['dates'] = date_strs[::-1]
-    st.session_state['valid_count'] = valid_stock_count
-    st.session_state['calc_done'] = True
-    progress_bar.empty()
-    status_text.empty()
-    st.rerun()
-
-# ================= 顯示結果與 AI 分析區 =================
-if st.session_state.get('calc_done'):
-    st.success(f"🎉 運算完成！(成功取得歷史資料: {st.session_state['valid_count']} 檔，含一般股票與ETF)")
-    
-    selected_date = st.radio("📅 選擇資料日期：", st.session_state['dates'], horizontal=True)
-    current_data = st.session_state['results'][selected_date]
-    
-    tab1, tab2 = st.tabs(["🟢 多方突破 (漲幅>3%)", "🔴 空方跌破 (跌幅>3%)"])
-    with tab1:
-        st.markdown(render_html_table(current_data['up']), unsafe_allow_html=True)
-    with tab2:
-        st.markdown(render_html_table(current_data['down']), unsafe_allow_html=True)
-    
-    st.write("---")
-    
-    # ===== 🤖 AI 深度分析區 =====
-    st.subheader("🤖 AI 專屬操盤助理")
-    
-    all_filtered_stocks = current_data['up'] + current_data['down']
-    
-    if not all_filtered_stocks:
-        st.info("該日無符合條件的標的可供分析。")
-    elif not HAS_AI:
-        st.warning("⚠️ 系統未能成功連接 AI。可能是 API 鑰匙無效，或當前伺服器無可用模型。")
-    else:
-        st.caption(f"🧠 目前啟用的 AI 模型核心：`{AI_MODEL_NAME}`")
-        stock_options = {row['代號名稱']: row for row in all_filtered_stocks}
-        selected_stock_name = st.selectbox("請選擇一檔標的，讓 AI 進行深度診斷：", list(stock_options.keys()))
+        st.success("✨ 診斷完成！已為您生成專屬戰情室報表：")
+        st.write("---")
         
-        # ★ 新增：將按鈕拆分，左邊是診斷，右邊是存入追蹤表
-        col_btn1, col_btn2 = st.columns(2)
-        with col_btn1:
-            do_diagnose = st.button(f"✨ 開始診斷 {selected_stock_name}", type="primary", use_container_width=True)
-        with col_btn2:
-            if st.button(f"💾 將此標的寫入【戰績追蹤表】", use_container_width=True):
-                with st.spinner("正在寫入 Google 雲端資料庫..."):
-                    target = stock_options[selected_stock_name]
-                    ok = save_to_tracking_sheet(selected_date, target['代碼'], target['代號名稱'], target['收盤價'])
-                    if ok:
-                        st.success(f"✅ 成功將 {target['代號名稱']} 寫入雲端！(請至你的 Google Sheets 查看)")
-                    else:
-                        st.error("寫入失敗，請檢查網路連線。")
-        
-        if do_diagnose:
-            target_stock = stock_options[selected_stock_name]
+        col_left, col_right = st.columns([3, 7])
+        with col_left:
+            st.subheader("📊 客觀數據儀表板")
+            score_title = f"🟢 評分：{score_val} 分" if score_val >= 60 else f"🟡 評分：{score_val} 分" if score_val >= 30 else f"🔴 評分：{score_val} 分"
+            with st.expander(score_title, expanded=True): st.markdown(score_html, unsafe_allow_html=True)
             
-            with st.spinner(f"AI 正在為您計算技術指標並生成詳細報告中... (約需 15~20 秒)"):
+            try:
+                ma20 = df_tech['Close'].rolling(window=20).mean().iloc[-1]
+                bias_20 = ((df_tech['Close'].iloc[-1] - ma20) / ma20) * 100
+                temp_msg = f"**乖離率數值：{bias_20:.2f}%**\n\n> 💡 偏離 20MA 過大易拉回，靠近 0 則安全。"
+                with st.expander("🌡️ 位階溫度計", expanded=False): st.markdown(temp_msg)
+            except: pass
+                
+            chip_details = [
+                "🏦 **【最新法人動向】** *(留意盤中為昨日數據)*",
+                f"* 外資：{'🔴 買' if foreign_lots > 0 else '🟢 賣' if foreign_lots < 0 else '⚪ 平'} {foreign_lots} 張",
+                f"* 投信：{'🔴 買' if trust_lots > 0 else '🟢 賣' if trust_lots < 0 else '⚪ 平'} {trust_lots} 張",
+                f"* 自營：{'🔴 買' if dealer_lots > 0 else '🟢 賣' if dealer_lots < 0 else '⚪ 平'} {dealer_lots} 張"
+            ]
+            with st.expander("💰 籌碼與雷達", expanded=True): st.markdown("\n".join(chip_details))
+
+        with col_right:
+            st.subheader("🤖 AI 操盤導師深度解析")
+            st.markdown(clean_output)
+    except Exception as e:
+        st.error(f"AI 運算發生錯誤：{e}")
+
+# ================= 側邊欄導航 =================
+st.sidebar.title("🎛️ 系統導航")
+page_mode = st.sidebar.radio("請選擇戰情室：", ["🎯 波段多空篩選器", "🛡️ 實戰持股保鑣", "🔍 戰術覆盤室"])
+st.sidebar.write("---")
+st.sidebar.caption("AI 狀態: " + ("✅ 已連線" if HAS_AI else "❌ 未連線"))
+if HAS_AI: st.sidebar.caption(f"引擎: `{AI_MODEL_NAME}`")
+
+# ================= 頁面一：波段多空篩選器 =================
+if page_mode == "🎯 波段多空篩選器":
+    st.title("🎯 波段多空篩選器")
+    st.write("條件：道氏理論波段轉折 + 突破/跌破 5MA + 當日實體動能 (3%)")
+
+    if 'calc_done' not in st.session_state:
+        st.session_state['calc_done'] = False
+
+    if st.button("🚀 開始篩選 (一鍵執行)", use_container_width=True, type="primary"):
+        with st.spinner("正在下載全市場資料並運算中..."):
+            stock_info = get_tw_stock_info()
+            all_tickers = list(stock_info.keys())
+            try: data = download_stock_data(all_tickers)
+            except Exception: st.error("資料下載失敗"); st.stop()
+                
+            valid_dates = data.index.dropna().unique().sort_values()[-5:]
+            date_strs = [d.strftime("%Y-%m-%d") for d in valid_dates]
+            results_by_date = {d: {'up': [], 'down': []} for d in date_strs}
+            
+            for ticker in all_tickers:
                 try:
-                    ticker_obj = yf.Ticker(target_stock['代碼'])
-                    df_tech = ticker_obj.history(period="3mo")
-                    info = ticker_obj.info
+                    df_full = data[ticker].copy() if len(all_tickers) > 1 else data.copy()
+                    df_full = df_full.dropna()
+                    if isinstance(df_full.columns, pd.MultiIndex): df_full.columns = df_full.columns.droplevel(1)
+                    if len(df_full) < 15: continue
+                        
+                    df_full['5MA'] = df_full['Close'].rolling(window=5).mean()
+                    df_full = df_full.dropna()
+                    df_full['Position'] = df_full.apply(lambda row: 1 if row['Close'] > row['5MA'] else -1, axis=1)
+                    
+                    for d_idx, target_date in enumerate(valid_dates):
+                        date_str = date_strs[d_idx]
+                        if target_date not in df_full.index: continue
+                        loc = df_full.index.get_loc(target_date)
+                        if isinstance(loc, slice) or isinstance(loc, pd.Series): loc = df_full.index.get_indexer([target_date])[0]
+                        df = df_full.iloc[:loc+1]
+                        if len(df) < 10: continue
+                        
+                        waves = []
+                        current_pos, current_high, current_low = df['Position'].iloc[0], df['High'].iloc[0], df['Low'].iloc[0]
+                        for i in range(1, len(df)):
+                            pos, high, low = df['Position'].iloc[i], df['High'].iloc[i], df['Low'].iloc[i]
+                            if pos == current_pos:
+                                if high > current_high: current_high = high
+                                if low < current_low: current_low = low
+                            else:
+                                waves.append({'high': current_high, 'low': current_low})
+                                current_pos, current_high, current_low = pos, high, low
+                        waves.append({'high': current_high, 'low': current_low})
+
+                        today_pos, yest_pos = df['Position'].iloc[-1], df['Position'].iloc[-2]
+                        today_close, yest_close = df['Close'].iloc[-1], df['Close'].iloc[-2]
+                        pct_change = ((today_close - yest_close) / yest_close) * 100
+                        full_name = f"{ticker.split('.')[0]} {stock_info.get(ticker, '')}"
+                        
+                        if today_pos == 1 and yest_pos == -1 and pct_change >= 3.0 and len(waves) >= 5:
+                            low_2, high_2, low_1, high_1 = waves[-2]['low'], waves[-3]['high'], waves[-4]['low'], waves[-5]['high']
+                            if high_2 >= high_1 and low_2 >= low_1:
+                                results_by_date[date_str]['up'].append({"代碼": ticker, "代號名稱": full_name, "收盤價": round(today_close, 2), "漲跌幅": f"+{pct_change:.2f}%", "第一低": round(low_1, 2), "第二低": round(low_2, 2), "第一高": round(high_1, 2), "第二高": round(high_2, 2)})
+
+                        elif today_pos == -1 and yest_pos == 1 and pct_change <= -3.0 and len(waves) >= 5:
+                            high_2, low_2, high_1, low_1 = waves[-2]['high'], waves[-3]['low'], waves[-4]['high'], waves[-5]['low']
+                            if high_2 <= high_1 and low_2 <= low_1:
+                                results_by_date[date_str]['down'].append({"代碼": ticker, "代號名稱": full_name, "收盤價": round(today_close, 2), "漲跌幅": f"{pct_change:.2f}%", "第一低": round(low_1, 2), "第二低": round(low_2, 2), "第一高": round(high_1, 2), "第二高": round(high_2, 2)})
+                except: continue
+                
+        st.session_state['results'] = results_by_date
+        st.session_state['dates'] = date_strs[::-1]
+        st.session_state['calc_done'] = True
+        st.rerun()
+
+    if st.session_state.get('calc_done'):
+        selected_date = st.radio("📅 選擇資料日期：", st.session_state['dates'], horizontal=True)
+        current_data = st.session_state['results'][selected_date]
+        
+        tab1, tab2 = st.tabs(["🟢 多方突破", "🔴 空方跌破"])
+        with tab1: st.markdown(render_html_table(current_data['up']), unsafe_allow_html=True)
+        with tab2: st.markdown(render_html_table(current_data['down']), unsafe_allow_html=True)
+        
+        st.write("---")
+        st.subheader("🤖 AI 專屬操盤助理")
+        all_filtered = current_data['up'] + current_data['down']
+        
+        if all_filtered and HAS_AI:
+            stock_options = {row['代號名稱']: row for row in all_filtered}
+            selected_stock_name = st.selectbox("請選擇標的：", list(stock_options.keys()))
+            target = stock_options[selected_stock_name]
+            is_up = target in current_data['up']
+            direction_str = "🟢 多方突破" if is_up else "🔴 空方跌破"
+            
+            col1, col2 = st.columns(2)
+            do_diagnose = col1.button(f"✨ 診斷 {selected_stock_name}", type="primary", use_container_width=True)
+            if col2.button(f"💾 寫入【戰績追蹤表】", use_container_width=True):
+                with st.spinner("寫入中..."):
+                    if save_to_tracking_sheet(selected_date, target['代碼'], target['代號名稱'], direction_str, target['收盤價']):
+                        st.success(f"✅ {target['代號名稱']} 已成功存入雲端！")
+                    else: st.error("寫入失敗。")
+            
+            if do_diagnose:
+                with st.spinner("AI 深度思考中..."):
+                    df_tech = yf.Ticker(target['代碼']).history(period="3mo")
+                    chip_df = get_institutional_chips()
+                    f_lots, t_lots, d_lots = 0, 0, 0
+                    if not chip_df.empty:
+                        row_chip = chip_df[chip_df['證券代號'] == target['代碼'].split('.')[0]]
+                        if not row_chip.empty:
+                            f_lots = extract_chip_value(row_chip.iloc[0], '外')
+                            t_lots = extract_chip_value(row_chip.iloc[0], '投信')
+                            d_lots = extract_chip_value(row_chip.iloc[0], '自營')
+                    
+                    score_val, score_html = calculate_kline_score(df_tech)
+                    prompt = f"""
+                    你是一位精通台股的資深操盤導師。請寫一份極度詳細的繁體中文報告，拒絕敷衍。
+                    標的：{selected_stock_name} ({direction_str})
+                    今日收盤：{target['收盤價']}
+                    最新法人籌碼：外資 {f_lots}張, 投信 {t_lots}張, 自營 {d_lots}張
+                    
+                    ### 1. 📊 籌碼與K線結構深度解析
+                    (利用「盤前/昨日法人籌碼提早卡位」與「今日技術面突破」的時間差邏輯，深度推演主力意圖。)
+                    ### 2. 📰 基本面與市場題材評估
+                    (針對該股所屬產業或ETF特性進行深度剖析)
+                    ### 3. 📈 技術指標健檢與教學
+                    (以此股當前位階教導新手技術面的意義)
+                    ### 4. 🎯 實戰交易計畫 (附詳細邏輯)
+                    (給出進場區間、停利、停損，並解釋背後均線與型態邏輯)
+                    """
+                    generate_ai_report(prompt, score_val, score_html, df_tech, {}, f_lots, t_lots, d_lots)
+
+# ================= 頁面二：實戰持股保鑣 =================
+elif page_mode == "🛡️ 實戰持股保鑣":
+    st.title("🛡️ 實戰持股保鑣 (即時風險控管)")
+    st.write("讀取資料庫中標記為「👀 追蹤中」的標的，提供即時防守策略與移動停利建議。")
+    
+    with st.spinner("正在與 Google 雲端連線讀取追蹤清單..."):
+        tracking_df = get_tracking_data()
+        
+    if tracking_df.empty or '追蹤狀態' not in tracking_df.columns:
+        st.warning("目前追蹤清單為空，請先在「篩選器」中新增標的，或確認試算表欄位是否正確設定。")
+    else:
+        active_stocks = tracking_df[tracking_df['追蹤狀態'] == '👀 追蹤中']
+        if active_stocks.empty:
+            st.info("目前沒有「👀 追蹤中」的標的。")
+        else:
+            st.write(f"目前監控中標的：**{len(active_stocks)} 檔**")
+            
+            # 即時抓取最新報價
+            tickers_to_fetch = active_stocks['股票代碼'].tolist()
+            with st.spinner("正在透過 yfinance 獲取今日最新報價..."):
+                live_data = yf.download(tickers_to_fetch, period="1d", group_by="ticker", progress=False)
+            
+            display_list = []
+            for _, row in active_stocks.iterrows():
+                tkr = row['股票代碼']
+                entry_p = float(row['進場收盤價'])
+                try:
+                    current_p = round(live_data[tkr]['Close'].iloc[-1], 2) if len(tickers_to_fetch)>1 else round(live_data['Close'].iloc[-1], 2)
+                    ret_pct = ((current_p - entry_p) / entry_p) * 100
+                    color = "red" if ret_pct > 0 else "green"
+                    ret_str = f"<span style='color:{color}; font-weight:bold;'>{'+' if ret_pct>0 else ''}{ret_pct:.2f}%</span>"
+                except:
+                    current_p = "讀取中"
+                    ret_str = "-"
+                    
+                display_list.append({
+                    "進場日期": row['選出日期'], "股票名稱": row['股票名稱'], "方向": row['多空方向'],
+                    "進場成本": entry_p, "最新報價": current_p, "當前損益": ret_str
+                })
+                
+            st.markdown(render_html_table(display_list).replace("漲跌幅", "當前損益").replace("第一低", "方向").replace("第二低", "進場成本").replace("第一高", "最新報價").replace("<th style='padding: 8px;'>第二高</th>", ""), unsafe_allow_html=True)
+            
+            st.write("---")
+            target_name = st.selectbox("🛡️ 請選擇要進行【AI 防禦健檢】的標的：", active_stocks['股票名稱'].tolist())
+            if st.button(f"🛡️ 呼叫保鑣檢驗 {target_name}", type="primary"):
+                with st.spinner("AI 正在分析進場至今的籌碼與 K 線變化..."):
+                    target_row = active_stocks[active_stocks['股票名稱'] == target_name].iloc[0]
+                    tkr = target_row['股票代碼']
+                    df_tech = yf.Ticker(tkr).history(period="1mo")
                     
                     chip_df = get_institutional_chips()
-                    foreign_lots, trust_lots, dealer_lots = 0, 0, 0
+                    f_lots, t_lots, d_lots = 0, 0, 0
                     if not chip_df.empty:
-                        target_code = target_stock['代碼'].split('.')[0]
-                        stock_chip = chip_df[chip_df['證券代號'] == target_code]
-                        if not stock_chip.empty:
-                            row_chip = stock_chip.iloc[0]
-                            foreign_lots = extract_chip_value(row_chip, '外')
-                            trust_lots = extract_chip_value(row_chip, '投信')
-                            dealer_lots = extract_chip_value(row_chip, '自營')
-                    
-                    today_open, today_high, today_low, today_close = 0, 0, 0, 0
-                    if not df_tech.empty and len(df_tech) > 26:
-                        today_open = round(df_tech['Open'].iloc[-1], 2)
-                        today_high = round(df_tech['High'].iloc[-1], 2)
-                        today_low = round(df_tech['Low'].iloc[-1], 2)
-                        today_close = round(df_tech['Close'].iloc[-1], 2)
+                        row_chip = chip_df[chip_df['證券代號'] == tkr.split('.')[0]]
+                        if not row_chip.empty:
+                            f_lots, t_lots, d_lots = extract_chip_value(row_chip.iloc[0], '外'), extract_chip_value(row_chip.iloc[0], '投信'), extract_chip_value(row_chip.iloc[0], '自營')
 
-                        delta = df_tech['Close'].diff()
-                        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-                        rs = gain / loss
-                        rsi_14 = 100 - (100 / (1 + rs))
-                        current_rsi = round(rsi_14.iloc[-1], 2)
-                        
-                        exp1 = df_tech['Close'].ewm(span=12, adjust=False).mean()
-                        exp2 = df_tech['Close'].ewm(span=26, adjust=False).mean()
-                        macd = exp1 - exp2
-                        signal = macd.ewm(span=9, adjust=False).mean()
-                        macd_val = round(macd.iloc[-1], 2)
-                        signal_val = round(signal.iloc[-1], 2)
-                        
-                        low_min = df_tech['Low'].rolling(window=9).min()
-                        high_max = df_tech['High'].rolling(window=9).max()
-                        rsv = 100 * ((df_tech['Close'] - low_min) / (high_max - low_min))
-                        df_tech['K'] = rsv.ewm(com=2).mean()
-                        df_tech['D'] = df_tech['K'].ewm(com=2).mean()
-                        current_k = round(df_tech['K'].iloc[-1], 2)
-                        current_d = round(df_tech['D'].iloc[-1], 2)
-                        
-                        tech_data_str = f"RSI(14): {current_rsi} | MACD值: {macd_val}, 訊號線: {signal_val} | K值: {current_k}, D值: {current_d}"
-                    else:
-                        tech_data_str = "歷史資料不足，無法計算進階指標"
-
-                    pe_ratio = info.get('trailingPE', '無資料')
-                    pb_ratio = info.get('priceToBook', '無資料')
-                    volume = info.get('volume', '無資料')
-                    
-                    news_titles = "無最新新聞"
-                    try:
-                        news = ticker_obj.news
-                        if news and isinstance(news, list):
-                            safe_news = []
-                            for n in news[:3]:
-                                if isinstance(n, dict):
-                                    title = n.get('title') or n.get('content', {}).get('title') or "無標題新聞"
-                                    safe_news.append(f"- {title}")
-                            if safe_news: news_titles = "\n".join(safe_news)
-                    except Exception:
-                        pass
-                        
-                    # ★ 深度指令：完美融合 K線與籌碼，並強制要求 AI 思考「時間差邏輯」！
                     prompt = f"""
-                    你是一位精通台股量化交易的資深操盤導師。
-                    請為我撰寫一份「極度詳細、具備深度教學意義」的繁體中文分析報告。拒絕任何簡短的條列式敷衍。
-
-                    【標的真實數據】
-                    名稱：{selected_stock_name}
-                    今日K線數據：開盤 {today_open} / 最高 {today_high} / 最低 {today_low} / 收盤 {today_close}
-                    今日成交量：{volume}
-                    最近一次盤後三大法人動向：外資 {foreign_lots} 張，投信 {trust_lots} 張，自營商 {dealer_lots} 張
-                    波段第一低點：{target_stock['第一低']}，第二低點：{target_stock['第二低']}
-                    波段第一高點：{target_stock['第一高']}，第二高點：{target_stock['第二高']}
-                    本益比 (P/E)：{pe_ratio} / 股價淨值比 (P/B)：{pb_ratio}
-                    今日真實技術指標：{tech_data_str}
-                    近期新聞：\n{news_titles}
-
-                    【時間差邏輯重要提醒】
-                    請特別注意：我們提供的法人籌碼可能是「前一交易日的盤後數據」，而 K 線代表的是「今日的即時突破」。請在教學中利用這點，教導新手如何看懂「法人提早卡位」與「今日技術面發動」的共振關係。
-
-                    【必須包含的4個段落】(每個段落請務必深入探討，字數要充實)：
-                    ### 1. 📊 籌碼與K線結構深度解析
-                    (必須結合今日提供的「K線型態數據」、「大於3%的實體動能」，以及「三大法人買賣超張數」進行深度交叉比對！請務必利用「昨日籌碼提早卡位」與「今日技術面突破」的時間差邏輯，詳細推演主力籌碼是否安定？法人是真突破買進還是趁著長紅K拉高出貨？)
+                    你是一位極度重視風險控管的基金經理人。
+                    持股：{target_name} ({target_row['多空方向']})
+                    進場成本：{target_row['進場收盤價']} / 目前最新價：{df_tech['Close'].iloc[-1]:.2f}
+                    今日三大法人：外資 {f_lots}張, 投信 {t_lots}張, 自營 {d_lots}張
                     
-                    ### 2. 📰 基本面與市場題材評估
-                    (深入解讀本益比是否合理，以及近期新聞對股價推升的實質幫助。若是ETF則詳述其特性。)
-                    
-                    ### 3. 📈 真實技術指標健檢與教學
-                    (明確帶入提供的 RSI, MACD, KD 數值。詳細解釋目前是超買超賣還是黃金交叉？並教導新手這些數據現在代表什麼意義。)
-                    
-                    ### 4. 🎯 實戰交易計畫 (附詳細邏輯說明)
-                    (給出具體的「進場區間」、「停利價位」、「停損價位」。最重要的是，請詳細解釋為什麼設定在這個價位？背後的道氏理論或均線邏輯是什麼？)
+                    請給出一份防守導向的報告：
+                    ### 1. 📊 持股現況與籌碼診斷
+                    (分析從進場至今，獲利或虧損的原因？主力法人現在是在出貨還是在加碼？)
+                    ### 2. 🛡️ 乖離率與風險提示
+                    (教導目前的位階是否過熱或破線，並解釋乖離風險。)
+                    ### 3. 🎯 防禦策略 (停損/移動停利)
+                    (強制給出具體的「移動停利點」或「停損點」！詳細解釋為什麼設在這裡？跌破哪一根K線或均線就必須嚴格拔檔？)
+                    ### 4. 💡 操盤手心法
+                    (給予持股者心理層面的專業教育)
                     """
-                    
-                    response = model.generate_content(prompt)
-                    raw_output = response.text
-                    
-                    # 物理截斷術
-                    start_marker = "### 1."
-                    if start_marker in raw_output:
-                        clean_output = raw_output[raw_output.find(start_marker):]
-                    else:
-                        clean_output = raw_output 
-                    
-                    st.success("✨ 診斷完成！已為您生成專屬戰情室報表：")
-                    score_val, score_html = calculate_kline_score(df_tech)
-                    
-                    st.write("---")
-                    
-# ================= 戰情室左右分欄設計 =================
-                    col_left, col_right = st.columns([3, 7])
-                    
-                    # 👈 【左側區塊：客觀數據戰情室】
-                    with col_left:
-                        st.subheader("📊 客觀數據儀表板")
-                        
-                        if score_val >= 60:
-                            score_title = f"🟢 綜合評分：{score_val} 分 (強勢)"
-                        elif score_val >= 30:
-                            score_title = f"🟡 綜合評分：{score_val} 分 (中性)"
-                        else:
-                            score_title = f"🔴 綜合評分：{score_val} 分 (風險)"
-                            
-                        with st.expander(score_title, expanded=True):
-                            st.markdown(score_html, unsafe_allow_html=True)
-                            
-                        try:
-                            ma20 = df_tech['Close'].rolling(window=20).mean().iloc[-1]
-                            close_price = df_tech['Close'].iloc[-1]
-                            bias_20 = ((close_price - ma20) / ma20) * 100
-                            
-                            bias_teaching = "\n\n---\n**💡 導師觀念教學：什麼是乖離率 (BIAS)？**\n乖離率就像是「股價與均線之間的橡皮筋」。20MA(月線)代表過去一個月市場的平均成本。當股價漲太快、偏離月線太遠時，橡皮筋拉得太緊就容易產生「回檔的引力」；反之則會產生反彈。"
-                            
-                            if bias_20 > 15:
-                                temp_title = "🌡️ 位階溫度計：🔴 嚴重過熱 (危險)"
-                                temp_msg = f"**目前數值：+{bias_20:.2f}%**\n\n⚠️ **操作警告**：股價已大幅噴出偏離月線，短線追高面臨極大的獲利了結賣壓風險，建議切勿盲目追價！{bias_teaching}"
-                            elif bias_20 > 5:
-                                temp_title = "🌡️ 位階溫度計：🟡 動能發散 (強勢)"
-                                temp_msg = f"**目前數值：+{bias_20:.2f}%**\n\n📈 **當前狀態**：股價正處於強勢上漲軌道中，動能強勁。若為波段持股，請嚴守移動停利點。{bias_teaching}"
-                            elif bias_20 >= -5:
-                                temp_title = "🌡️ 位階溫度計：🟢 安全發動區 (平穩)"
-                                temp_msg = f"**目前數值：{bias_20:.2f}%**\n\n🎯 **當前狀態**：股價靠近月線附近，屬於起漲點或盤整突破區，此位階進場的「風險利潤比」最佳。{bias_teaching}"
-                            else:
-                                temp_title = "🌡️ 位階溫度計：❄️ 跌深反彈區 (弱勢)"
-                                temp_msg = f"**目前數值：{bias_20:.2f}%**\n\n📉 **當前狀態**：股價落後大盤或處於空頭反彈，操作難度高，建議觀望或搶短即跑。{bias_teaching}"
-                        except:
-                            temp_title = "🌡️ 位階溫度計：⚪ 資料不足"
-                            temp_msg = "歷史資料不足 20 天，無法計算月線乖離率。"
+                    generate_ai_report(prompt, calculate_kline_score(df_tech)[0], calculate_kline_score(df_tech)[1], df_tech, {}, f_lots, t_lots, d_lots)
 
-                        with st.expander(temp_title, expanded=False):
-                            st.markdown(temp_msg)
-                            
-                        try:
-                            df_tech['Direction'] = df_tech['Close'].diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
-                            df_tech['OBV'] = (df_tech['Volume'] * df_tech['Direction']).cumsum()
-                            obv_current = df_tech['OBV'].iloc[-1]
-                            obv_ma20 = df_tech['OBV'].rolling(window=20).mean().iloc[-1]
-                            vol_1 = df_tech['Volume'].iloc[-1]
-                            vol_5ma = df_tech['Volume'].tail(5).mean()
-                            pe_val = info.get('trailingPE', 0)
-                            
-                            chip_details = []
-                            # ★ 標題已經修改：註明時間差
-                            chip_details.append("🏦 **【最新法人動向 (盤中為昨日數據/盤後為今日數據)】**")
-                            chip_details.append(f"* 外資：{'🔴 買超' if foreign_lots > 0 else '🟢 賣超' if foreign_lots < 0 else '⚪ 平'} {foreign_lots} 張")
-                            chip_details.append(f"* 投信：{'🔴 買超' if trust_lots > 0 else '🟢 賣超' if trust_lots < 0 else '⚪ 平'} {trust_lots} 張")
-                            chip_details.append(f"* 自營商：{'🔴 買超' if dealer_lots > 0 else '🟢 賣超' if dealer_lots < 0 else '⚪ 平'} {dealer_lots} 張\n---")
-                            
-                            if vol_1 > vol_5ma:
-                                chip_details.append("✅ **【帶量突破】**：今日成交量大於 5 日均量。代表有真實的資金推升股價，突破有效度高。")
-                            else:
-                                chip_details.append("⚠️ **【無量上漲】**：今日成交量低於 5 日均量。股價上漲但缺乏資金追捧，慎防「誘多假突破」。")
-                                
-                            if obv_current > obv_ma20:
-                                chip_details.append("✅ **【主力吸籌】**：近期 OBV 能量潮站上均線。代表整體資金呈現「淨流入」，可能有主力暗中吃貨。")
-                            else:
-                                chip_details.append("⚠️ **【籌碼流失】**：近期 OBV 能量潮跌破均線。代表整體資金呈現「淨流出」，須留意主力拉高出貨。")
-                                
-                            if pe_val is None or pe_val == 0:
-                                chip_details.append("⚪ **【估值狀態】**：N/A (可能為 ETF 或獲利為負，無本益比數據)。")
-                            elif pe_val < 15:
-                                chip_details.append(f"✅ **【物美價廉】**：本益比約 {pe_val:.1f} 倍。低於 15 倍代表估值便宜。")
-                            elif pe_val <= 25:
-                                chip_details.append(f"🟡 **【合理區間】**：本益比約 {pe_val:.1f} 倍。市場給予合理評價。")
-                            else:
-                                chip_details.append(f"🔴 **【作夢估值】**：本益比約 {pe_val:.1f} 倍。大於 25 倍代表股價已透支未來獲利，操作須嚴設停損。")
-
-                            chip_title = "💰 價量籌碼與基本面雷達"
-                            chip_msg = "\n\n".join(chip_details)
-                            
-                        except Exception as e:
-                            chip_title = "💰 價量籌碼與基本面雷達 (運算異常)"
-                            chip_msg = f"無法取得完整資料來計算籌碼指標。({e})"
-
-                        with st.expander(chip_title, expanded=False):
-                            st.markdown(chip_msg)
-
-                    # 👉 【右側區塊：AI 操盤導師報告】
-                    with col_right:
-                        st.subheader("🤖 AI 操盤導師深度解析")
-                        st.markdown(clean_output)
-                        
-                except Exception as e:
-                    st.error(f"AI 診斷過程中發生未預期的錯誤。詳細原因：{e}")
+# ================= 頁面三：戰術覆盤室 =================
+elif page_mode == "🔍 戰術覆盤室":
+    st.title("🔍 戰術覆盤室 (歷史交易檢討)")
+    st.write("讀取試算表中所有的歷史選股紀錄，AI 將猶如法醫般為您解剖當初的突破為何成功或失敗。")
+    
+    with st.spinner("正在載入歷史戰績表..."):
+        tracking_df = get_tracking_data()
+        
+    if tracking_df.empty:
+        st.warning("資料庫無歷史紀錄。")
+    else:
+        st.dataframe(tracking_df, use_container_width=True)
+        st.write("---")
+        target_name = st.selectbox("🔍 選擇一檔股票進行【AI 戰術覆盤】：", tracking_df['股票名稱'].tolist())
+        
+        if st.button(f"🔍 啟動歷史覆盤：{target_name}", type="primary"):
+            with st.spinner("AI 正在比對選出當天與後續的歷史軌跡..."):
+                target_row = tracking_df[tracking_df['股票名稱'] == target_name].iloc[0]
+                tkr = target_row['股票代碼']
+                entry_date_str = target_row['選出日期']
+                
+                df_tech = yf.Ticker(tkr).history(period="3mo")
+                
+                prompt = f"""
+                你是一位嚴厲但專業的量化策略檢討導師。
+                標的：{target_name} ({target_row['多空方向']})
+                當初選出進場日：{entry_date_str} / 當時收盤價：{target_row['進場收盤價']}
+                今日最新價：{df_tech['Close'].iloc[-1] if not df_tech.empty else '無'}
+                
+                這是一次事後檢討 (Post-Mortem Analysis)。請針對這筆交易進行解剖：
+                ### 1. 📊 突破後的真實走勢還原
+                (檢視進場日之後，這檔股票發生了什麼事？有沒有出現假突破？籌碼有沒有延續？)
+                ### 2. 🕵️‍♂️ 成功或失敗的核心原因
+                (如果賺錢，是因為遇到什麼型態與籌碼共振？如果賠錢，當初選股時忽略了什麼敗象？)
+                ### 3. 🛡️ 應對的出場時機檢討
+                (事後來看，最佳的停利點或停損點應該出現在哪一天的什麼價位？為什麼？)
+                ### 4. 💡 策略進化總結
+                (總結這次經驗，教導投資人未來在篩選器看到類似訊號時，該如何避開陷阱或放大獲利？)
+                """
+                # 覆盤模式不強調今日籌碼，重點在歷史檢討
+                generate_ai_report(prompt, calculate_kline_score(df_tech)[0], calculate_kline_score(df_tech)[1], df_tech, {}, 0, 0, 0)
