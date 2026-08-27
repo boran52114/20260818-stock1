@@ -6,7 +6,7 @@ import google.generativeai as genai
 from datetime import datetime, timedelta
 
 # ================= 網頁設定 =================
-st.set_page_config(page_title="台股波段多空篩選器 V2", page_icon="📈", layout="wide")
+st.set_page_config(page_title="台股波段多空篩選器 V2.1", page_icon="📈", layout="wide")
 
 # ================= 雲端資料庫設定 =================
 GAS_CHIP_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTHRZ3lb6xhRTG9uINlzoiMjlSrqQExX9JoGeg5zI7OoPDk1dF5TUguC4Fq_Oge5ALSCHK-fBUGtrx7/pub?gid=0&single=true&output=csv"
@@ -51,10 +51,8 @@ def get_tw_stock_info():
             for item in res_tpex.json():
                 code = item['SecuritiesCompanyCode']
                 if len(code) == 4 or code.startswith('00'): stock_dict[code + '.TWO'] = item['CompanyName']
-    except Exception:
-        pass 
-    if len(stock_dict) < 100:
-        stock_dict = {'2330.TW': '台積電', '2317.TW': '鴻海', '2454.TW': '聯發科', '0050.TW': '元大台灣50'}
+    except Exception: pass 
+    if len(stock_dict) < 100: stock_dict = {'2330.TW': '台積電', '2317.TW': '鴻海', '2454.TW': '聯發科', '0050.TW': '元大台灣50'}
     return stock_dict
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -67,37 +65,24 @@ def get_institutional_chips():
         df = pd.read_csv(GAS_CHIP_CSV_URL)
         df['證券代號'] = df['證券代號'].astype(str)
         return df
-    except Exception:
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_tracking_data():
-    try:
-        df = pd.read_csv(GAS_TRACKING_CSV_URL)
-        return df
-    except Exception:
-        return pd.DataFrame()
+    try: return pd.read_csv(GAS_TRACKING_CSV_URL)
+    except: return pd.DataFrame()
 
 def extract_chip_value(row, keyword):
     for col in row.index:
         if keyword in col and '買賣超' in col:
-            try:
-                val = str(row[col]).replace(',', '').strip()
-                return int(val) // 1000 
-            except:
-                pass
+            try: return int(str(row[col]).replace(',', '').strip()) // 1000 
+            except: pass
     return 0
 
 def save_to_tracking_sheet(date_str, ticker, name, direction, entry_price):
-    payload = {
-        "date": date_str, "ticker": ticker, "name": name, 
-        "direction": direction, "entry_price": entry_price
-    }
-    try:
-        res = requests.post(GAS_WEB_APP_URL, json=payload)
-        return res.status_code == 200
-    except:
-        return False
+    payload = {"date": date_str, "ticker": ticker, "name": name, "direction": direction, "entry_price": entry_price}
+    try: return requests.post(GAS_WEB_APP_URL, json=payload).status_code == 200
+    except: return False
 
 def render_html_table(data_list):
     if not data_list: return "<div style='color: #666;'>本日無符合條件標的</div>"
@@ -107,6 +92,7 @@ def render_html_table(data_list):
         color = "#ff4b4b" if "+" in row['漲跌幅'] else "#09ab3b" if "-" in row['漲跌幅'] else "black"
         html += f"<tr style='border-bottom: 1px solid #eee;'><td style='padding: 6px;'><b>{row['代號名稱']}</b></td><td>{row['收盤價']}</td><td style='color: {color}; font-weight: bold;'>{row['漲跌幅']}</td><td>{row['第一低']}</td><td>{row['第二低']}</td><td>{row['第一高']}</td><td>{row['第二高']}</td></tr>"
     return html + "</table></div>"
+
 def render_tracking_table(data_list):
     if not data_list: return "<div style='color: #666;'>無追蹤中標的</div>"
     html = "<div style='overflow-x: auto;'><table style='width: 100%; border-collapse: collapse; font-size: 15px; text-align: center;'>"
@@ -128,7 +114,7 @@ def calculate_kline_score(df_stock):
         score -= 20; details.append("<li><span style='color:red;'><b>量價背離</b>：實體突破但量縮，防假突破 (-20分)</span></li>")
     return max(-100, min(100, score)), f"<ul>{''.join(details)}</ul>"
 
-def generate_ai_report(prompt_text, score_val, score_html, df_tech, info, foreign_lots, trust_lots, dealer_lots):
+def generate_ai_report(prompt_text, score_val, score_html, df_tech, f_lots, t_lots, d_lots):
     try:
         response = model.generate_content(prompt_text)
         raw_output = response.text
@@ -142,7 +128,6 @@ def generate_ai_report(prompt_text, score_val, score_html, df_tech, info, foreig
             st.subheader("📊 客觀數據儀表板")
             score_title = f"🟢 評分：{score_val} 分" if score_val >= 60 else f"🟡 評分：{score_val} 分" if score_val >= 30 else f"🔴 評分：{score_val} 分"
             with st.expander(score_title, expanded=True): st.markdown(score_html, unsafe_allow_html=True)
-            
             try:
                 ma20 = df_tech['Close'].rolling(window=20).mean().iloc[-1]
                 bias_20 = ((df_tech['Close'].iloc[-1] - ma20) / ma20) * 100
@@ -151,18 +136,17 @@ def generate_ai_report(prompt_text, score_val, score_html, df_tech, info, foreig
             except: pass
                 
             chip_details = [
-                "🏦 **【最新法人動向】** *(留意盤中為昨日數據)*",
-                f"* 外資：{'🔴 買' if foreign_lots > 0 else '🟢 賣' if foreign_lots < 0 else '⚪ 平'} {foreign_lots} 張",
-                f"* 投信：{'🔴 買' if trust_lots > 0 else '🟢 賣' if trust_lots < 0 else '⚪ 平'} {trust_lots} 張",
-                f"* 自營：{'🔴 買' if dealer_lots > 0 else '🟢 賣' if dealer_lots < 0 else '⚪ 平'} {dealer_lots} 張"
+                "🏦 **【最新單日法人動向】** *(留意這非累積數據)*",
+                f"* 外資：{'🔴 買' if f_lots > 0 else '🟢 賣' if f_lots < 0 else '⚪ 平'} {f_lots} 張",
+                f"* 投信：{'🔴 買' if t_lots > 0 else '🟢 賣' if t_lots < 0 else '⚪ 平'} {t_lots} 張",
+                f"* 自營：{'🔴 買' if d_lots > 0 else '🟢 賣' if d_lots < 0 else '⚪ 平'} {d_lots} 張"
             ]
             with st.expander("💰 籌碼與雷達", expanded=True): st.markdown("\n".join(chip_details))
 
         with col_right:
             st.subheader("🤖 AI 操盤導師深度解析")
             st.markdown(clean_output)
-    except Exception as e:
-        st.error(f"AI 運算發生錯誤：{e}")
+    except Exception as e: st.error(f"AI 運算發生錯誤：{e}")
 
 # ================= 側邊欄導航 =================
 st.sidebar.title("🎛️ 系統導航")
@@ -176,15 +160,14 @@ if page_mode == "🎯 波段多空篩選器":
     st.title("🎯 波段多空篩選器")
     st.write("條件：道氏理論波段轉折 + 突破/跌破 5MA + 當日實體動能 (3%)")
 
-    if 'calc_done' not in st.session_state:
-        st.session_state['calc_done'] = False
+    if 'calc_done' not in st.session_state: st.session_state['calc_done'] = False
 
     if st.button("🚀 開始篩選 (一鍵執行)", use_container_width=True, type="primary"):
         with st.spinner("正在下載全市場資料並運算中..."):
             stock_info = get_tw_stock_info()
             all_tickers = list(stock_info.keys())
             try: data = download_stock_data(all_tickers)
-            except Exception: st.error("資料下載失敗"); st.stop()
+            except: st.error("資料下載失敗"); st.stop()
                 
             valid_dates = data.index.dropna().unique().sort_values()[-5:]
             date_strs = [d.strftime("%Y-%m-%d") for d in valid_dates]
@@ -245,7 +228,6 @@ if page_mode == "🎯 波段多空篩選器":
     if st.session_state.get('calc_done'):
         selected_date = st.radio("📅 選擇資料日期：", st.session_state['dates'], horizontal=True)
         current_data = st.session_state['results'][selected_date]
-        
         tab1, tab2 = st.tabs(["🟢 多方突破", "🔴 空方跌破"])
         with tab1: st.markdown(render_html_table(current_data['up']), unsafe_allow_html=True)
         with tab2: st.markdown(render_html_table(current_data['down']), unsafe_allow_html=True)
@@ -258,68 +240,55 @@ if page_mode == "🎯 波段多空篩選器":
             stock_options = {row['代號名稱']: row for row in all_filtered}
             selected_stock_name = st.selectbox("請選擇標的：", list(stock_options.keys()))
             target = stock_options[selected_stock_name]
-            is_up = target in current_data['up']
-            direction_str = "🟢 多方突破" if is_up else "🔴 空方跌破"
+            direction_str = "🟢 多方突破" if target in current_data['up'] else "🔴 空方跌破"
             
             col1, col2 = st.columns(2)
-            do_diagnose = col1.button(f"✨ 診斷 {selected_stock_name}", type="primary", use_container_width=True)
+            if col1.button(f"✨ 診斷 {selected_stock_name}", type="primary", use_container_width=True):
+                with st.spinner("AI 深度思考中..."):
+                    df_tech = yf.Ticker(target['代碼']).history(period="3mo")
+                    chip_df, f_lots, t_lots, d_lots = get_institutional_chips(), 0, 0, 0
+                    if not chip_df.empty:
+                        row_chip = chip_df[chip_df['證券代號'] == target['代碼'].split('.')[0]]
+                        if not row_chip.empty:
+                            f_lots, t_lots, d_lots = extract_chip_value(row_chip.iloc[0], '外'), extract_chip_value(row_chip.iloc[0], '投信'), extract_chip_value(row_chip.iloc[0], '自營')
+                    
+                    score_val, score_html = calculate_kline_score(df_tech)
+                    prompt = f"""
+                    你是一位精通台股的資深操盤導師。請寫一份極度詳細的繁體中文報告，拒絕敷衍。
+                    標的：{selected_stock_name} ({direction_str}) / 今日收盤：{target['收盤價']}
+                    最新單日法人籌碼：外資 {f_lots}張, 投信 {t_lots}張, 自營 {d_lots}張
+                    
+                    ### 1. 📊 籌碼與K線結構深度解析
+                    (結合今日「K線型態數據」與「最新單日法人籌碼」進行比對！推演主力意圖。)
+                    ### 2. 📰 基本面與市場題材評估
+                    ### 3. 📈 技術指標健檢與教學
+                    ### 4. 🎯 實戰交易計畫 (附詳細邏輯)
+                    (給出進場區間、停利、停損，並解釋背後均線與型態邏輯)
+                    """
+                    generate_ai_report(prompt, score_val, score_html, df_tech, f_lots, t_lots, d_lots)
+
             if col2.button(f"💾 寫入【戰績追蹤表】", use_container_width=True):
                 with st.spinner("寫入中..."):
                     if save_to_tracking_sheet(selected_date, target['代碼'], target['代號名稱'], direction_str, target['收盤價']):
                         st.success(f"✅ {target['代號名稱']} 已成功存入雲端！")
                     else: st.error("寫入失敗。")
-            
-            if do_diagnose:
-                with st.spinner("AI 深度思考中..."):
-                    df_tech = yf.Ticker(target['代碼']).history(period="3mo")
-                    chip_df = get_institutional_chips()
-                    f_lots, t_lots, d_lots = 0, 0, 0
-                    if not chip_df.empty:
-                        row_chip = chip_df[chip_df['證券代號'] == target['代碼'].split('.')[0]]
-                        if not row_chip.empty:
-                            f_lots = extract_chip_value(row_chip.iloc[0], '外')
-                            t_lots = extract_chip_value(row_chip.iloc[0], '投信')
-                            d_lots = extract_chip_value(row_chip.iloc[0], '自營')
-                    
-                    score_val, score_html = calculate_kline_score(df_tech)
-                    prompt = f"""
-                    你是一位精通台股的資深操盤導師。請寫一份極度詳細的繁體中文報告，拒絕敷衍。
-                    標的：{selected_stock_name} ({direction_str})
-                    今日收盤：{target['收盤價']}
-                    最新法人籌碼：外資 {f_lots}張, 投信 {t_lots}張, 自營 {d_lots}張
-                    
-                    ### 1. 📊 籌碼與K線結構深度解析
-                    (利用「盤前/昨日法人籌碼提早卡位」與「今日技術面突破」的時間差邏輯，深度推演主力意圖。)
-                    ### 2. 📰 基本面與市場題材評估
-                    (針對該股所屬產業或ETF特性進行深度剖析)
-                    ### 3. 📈 技術指標健檢與教學
-                    (以此股當前位階教導新手技術面的意義)
-                    ### 4. 🎯 實戰交易計畫 (附詳細邏輯)
-                    (給出進場區間、停利、停損，並解釋背後均線與型態邏輯)
-                    """
-                    generate_ai_report(prompt, score_val, score_html, df_tech, {}, f_lots, t_lots, d_lots)
 
 # ================= 頁面二：實戰持股保鑣 =================
 elif page_mode == "🛡️ 實戰持股保鑣":
     st.title("🛡️ 實戰持股保鑣 (即時風險控管)")
-    st.write("讀取資料庫中標記為「👀 追蹤中」的標的，提供即時防守策略與移動停利建議。")
     
-    with st.spinner("正在與 Google 雲端連線讀取追蹤清單..."):
+    with st.spinner("正在讀取追蹤清單與最新報價..."):
         tracking_df = get_tracking_data()
         
     if tracking_df.empty or '追蹤狀態' not in tracking_df.columns:
-        st.warning("目前追蹤清單為空，請先在「篩選器」中新增標的，或確認試算表欄位是否正確設定。")
+        st.warning("目前無追蹤標的或欄位設定有誤。")
     else:
         active_stocks = tracking_df[tracking_df['追蹤狀態'] == '👀 追蹤中']
         if active_stocks.empty:
-            st.info("目前沒有「👀 追蹤中」的標的。")
+            st.info("目前沒有監控中的標的。")
         else:
-            st.write(f"目前監控中標的：**{len(active_stocks)} 檔**")
-            
-            # 即時抓取最新報價
             tickers_to_fetch = active_stocks['股票代碼'].tolist()
-            with st.spinner("正在透過 yfinance 獲取今日最新報價..."):
-                live_data = yf.download(tickers_to_fetch, period="1d", group_by="ticker", progress=False)
+            live_data = yf.download(tickers_to_fetch, period="1d", group_by="ticker", progress=False)
             
             display_list = []
             for _, row in active_stocks.iterrows():
@@ -330,88 +299,107 @@ elif page_mode == "🛡️ 實戰持股保鑣":
                     ret_pct = ((current_p - entry_p) / entry_p) * 100
                     color = "red" if ret_pct > 0 else "green"
                     ret_str = f"<span style='color:{color}; font-weight:bold;'>{'+' if ret_pct>0 else ''}{ret_pct:.2f}%</span>"
-                except:
-                    current_p = "讀取中"
-                    ret_str = "-"
+                except: current_p, ret_str = "讀取中", "-"
                     
-                display_list.append({
-                    "進場日期": row['選出日期'], "股票名稱": row['股票名稱'], "方向": row['多空方向'],
-                    "進場成本": entry_p, "最新報價": current_p, "當前損益": ret_str
-                })
+                display_list.append({"進場日期": row['選出日期'], "股票名稱": row['股票名稱'], "方向": row['多空方向'], "進場成本": entry_p, "最新報價": current_p, "當前損益": ret_str})
                 
             st.markdown(render_tracking_table(display_list), unsafe_allow_html=True)
-            
             st.write("---")
-            target_name = st.selectbox("🛡️ 請選擇要進行【AI 防禦健檢】的標的：", active_stocks['股票名稱'].tolist())
+            
+            target_name = st.selectbox("🛡️ 請選擇【AI 防禦健檢】標的：", active_stocks['股票名稱'].tolist())
             if st.button(f"🛡️ 呼叫保鑣檢驗 {target_name}", type="primary"):
-                with st.spinner("AI 正在分析進場至今的籌碼與 K 線變化..."):
+                with st.spinner("AI 正在解析「進場至今」的量價足跡，推測隱藏籌碼..."):
                     target_row = active_stocks[active_stocks['股票名稱'] == target_name].iloc[0]
                     tkr = target_row['股票代碼']
                     df_tech = yf.Ticker(tkr).history(period="1mo")
                     
-                    chip_df = get_institutional_chips()
-                    f_lots, t_lots, d_lots = 0, 0, 0
+                    chip_df, f_lots, t_lots, d_lots = get_institutional_chips(), 0, 0, 0
                     if not chip_df.empty:
                         row_chip = chip_df[chip_df['證券代號'] == tkr.split('.')[0]]
-                        if not row_chip.empty:
-                            f_lots, t_lots, d_lots = extract_chip_value(row_chip.iloc[0], '外'), extract_chip_value(row_chip.iloc[0], '投信'), extract_chip_value(row_chip.iloc[0], '自營')
+                        if not row_chip.empty: f_lots, t_lots, d_lots = extract_chip_value(row_chip.iloc[0], '外'), extract_chip_value(row_chip.iloc[0], '投信'), extract_chip_value(row_chip.iloc[0], '自營')
+
+                    # ★ 核心升級：計算進場後的真實量價，來彌補歷史籌碼缺漏 ★
+                    try:
+                        entry_date = pd.to_datetime(target_row['選出日期']).tz_localize(None)
+                        df_tech.index = df_tech.index.tz_localize(None)
+                        df_post = df_tech[df_tech.index >= entry_date]
+                        
+                        holding_days = len(df_post)
+                        high_since = round(df_post['High'].max(), 2) if holding_days > 0 else "無"
+                        low_since = round(df_post['Low'].min(), 2) if holding_days > 0 else "無"
+                        
+                        # 計算上漲與下跌的平均量 (判斷主力吃貨還是出貨)
+                        up_vol = df_post[df_post['Close'] > df_post['Open']]['Volume'].mean()
+                        down_vol = df_post[df_post['Close'] < df_post['Open']]['Volume'].mean()
+                        up_vol_str = f"{int(up_vol)} 張" if not pd.isna(up_vol) else "無上漲日"
+                        down_vol_str = f"{int(down_vol)} 張" if not pd.isna(down_vol) else "無下跌日"
+                    except:
+                        holding_days, high_since, low_since, up_vol_str, down_vol_str = 0, "無", "無", "無", "無"
 
                     prompt = f"""
                     你是一位極度重視風險控管的基金經理人。
-                    持股：{target_name} ({target_row['多空方向']})
-                    進場成本：{target_row['進場收盤價']} / 目前最新價：{df_tech['Close'].iloc[-1]:.2f}
-                    今日三大法人：外資 {f_lots}張, 投信 {t_lots}張, 自營 {d_lots}張
+                    持股：{target_name} ({target_row['多空方向']}) / 進場成本：{target_row['進場收盤價']} / 最新價：{df_tech['Close'].iloc[-1]:.2f}
                     
-                    請給出一份防守導向的報告：
-                    ### 1. 📊 持股現況與籌碼診斷
-                    (分析從進場至今，獲利或虧損的原因？主力法人現在是在出貨還是在加碼？)
+                    【⚠️ 彌補歷史籌碼缺漏的關鍵量價足跡】
+                    我們只有最新一天的零星籌碼 (外資 {f_lots}張, 投信 {t_lots}張, 自營 {d_lots}張)。
+                    為了判斷進場這 {holding_days} 天以來主力是否偷跑，請你「必須」透過以下真實量價數據來推演：
+                    - 期間最高價：{high_since} / 期間最低價：{low_since}
+                    - 上漲日平均成交量：{up_vol_str} (若大於下跌量，代表主力持續推升)
+                    - 下跌日平均成交量：{down_vol_str} (若爆量，代表主力趁機倒貨；若量縮，代表洗盤)
+                    
+                    ### 1. 📊 持股現況與量價籌碼推演
+                    (根據上方的「進場後量價足跡」，詳細剖析主力這幾天到底是在洗盤還是出貨？)
                     ### 2. 🛡️ 乖離率與風險提示
-                    (教導目前的位階是否過熱或破線，並解釋乖離風險。)
                     ### 3. 🎯 防禦策略 (停損/移動停利)
-                    (強制給出具體的「移動停利點」或「停損點」！詳細解釋為什麼設在這裡？跌破哪一根K線或均線就必須嚴格拔檔？)
+                    (強制給出具體的「移動停利點」或「停損點」！解釋為何設在這裡？跌破哪一根K線就必須拔檔？)
                     ### 4. 💡 操盤手心法
-                    (給予持股者心理層面的專業教育)
                     """
-                    generate_ai_report(prompt, calculate_kline_score(df_tech)[0], calculate_kline_score(df_tech)[1], df_tech, {}, f_lots, t_lots, d_lots)
+                    generate_ai_report(prompt, calculate_kline_score(df_tech)[0], calculate_kline_score(df_tech)[1], df_tech, f_lots, t_lots, d_lots)
 
 # ================= 頁面三：戰術覆盤室 =================
 elif page_mode == "🔍 戰術覆盤室":
     st.title("🔍 戰術覆盤室 (歷史交易檢討)")
-    st.write("讀取試算表中所有的歷史選股紀錄，AI 將猶如法醫般為您解剖當初的突破為何成功或失敗。")
     
     with st.spinner("正在載入歷史戰績表..."):
         tracking_df = get_tracking_data()
         
-    if tracking_df.empty:
-        st.warning("資料庫無歷史紀錄。")
+    if tracking_df.empty: st.warning("資料庫無歷史紀錄。")
     else:
         st.dataframe(tracking_df, use_container_width=True)
         st.write("---")
-        target_name = st.selectbox("🔍 選擇一檔股票進行【AI 戰術覆盤】：", tracking_df['股票名稱'].tolist())
+        target_name = st.selectbox("🔍 選擇股票進行【AI 戰術覆盤】：", tracking_df['股票名稱'].tolist())
         
         if st.button(f"🔍 啟動歷史覆盤：{target_name}", type="primary"):
-            with st.spinner("AI 正在比對選出當天與後續的歷史軌跡..."):
+            with st.spinner("AI 正在比對選出當天與後續的量價軌跡..."):
                 target_row = tracking_df[tracking_df['股票名稱'] == target_name].iloc[0]
                 tkr = target_row['股票代碼']
-                entry_date_str = target_row['選出日期']
-                
                 df_tech = yf.Ticker(tkr).history(period="3mo")
+                
+                try:
+                    entry_date = pd.to_datetime(target_row['選出日期']).tz_localize(None)
+                    df_tech.index = df_tech.index.tz_localize(None)
+                    df_post = df_tech[df_tech.index >= entry_date]
+                    holding_days = len(df_post)
+                    up_vol = df_post[df_post['Close'] > df_post['Open']]['Volume'].mean()
+                    down_vol = df_post[df_post['Close'] < df_post['Open']]['Volume'].mean()
+                    up_vol_str = f"{int(up_vol)} 張" if not pd.isna(up_vol) else "無上漲日"
+                    down_vol_str = f"{int(down_vol)} 張" if not pd.isna(down_vol) else "無下跌日"
+                except:
+                    holding_days, up_vol_str, down_vol_str = 0, "無", "無"
                 
                 prompt = f"""
                 你是一位嚴厲但專業的量化策略檢討導師。
-                標的：{target_name} ({target_row['多空方向']})
-                當初選出進場日：{entry_date_str} / 當時收盤價：{target_row['進場收盤價']}
-                今日最新價：{df_tech['Close'].iloc[-1] if not df_tech.empty else '無'}
+                標的：{target_name} ({target_row['多空方向']}) / 當初進場日：{target_row['選出日期']} / 當時收盤價：{target_row['進場收盤價']}
                 
-                這是一次事後檢討 (Post-Mortem Analysis)。請針對這筆交易進行解剖：
+                【進場後的真實量價軌跡】
+                進場至今 {holding_days} 天，上漲日平均成交量：{up_vol_str}，下跌日平均成交量：{down_vol_str}。
+                
+                這是一次事後檢討。請針對這筆交易進行解剖：
                 ### 1. 📊 突破後的真實走勢還原
-                (檢視進場日之後，這檔股票發生了什麼事？有沒有出現假突破？籌碼有沒有延續？)
+                (檢視進場日之後發生了什麼事？從上漲與下跌的平均成交量來看，主力是否真的有心拉抬？)
                 ### 2. 🕵️‍♂️ 成功或失敗的核心原因
-                (如果賺錢，是因為遇到什麼型態與籌碼共振？如果賠錢，當初選股時忽略了什麼敗象？)
                 ### 3. 🛡️ 應對的出場時機檢討
-                (事後來看，最佳的停利點或停損點應該出現在哪一天的什麼價位？為什麼？)
+                (事後來看，最佳的停利點或停損點應該出現在哪一天的什麼價位？)
                 ### 4. 💡 策略進化總結
-                (總結這次經驗，教導投資人未來在篩選器看到類似訊號時，該如何避開陷阱或放大獲利？)
                 """
-                # 覆盤模式不強調今日籌碼，重點在歷史檢討
-                generate_ai_report(prompt, calculate_kline_score(df_tech)[0], calculate_kline_score(df_tech)[1], df_tech, {}, 0, 0, 0)
+                generate_ai_report(prompt, calculate_kline_score(df_tech)[0], calculate_kline_score(df_tech)[1], df_tech, 0, 0, 0)
