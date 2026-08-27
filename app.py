@@ -107,6 +107,13 @@ def render_html_table(data_list):
         color = "#ff4b4b" if "+" in row['漲跌幅'] else "#09ab3b" if "-" in row['漲跌幅'] else "black"
         html += f"<tr style='border-bottom: 1px solid #eee;'><td style='padding: 6px;'><b>{row['代號名稱']}</b></td><td>{row['收盤價']}</td><td style='color: {color}; font-weight: bold;'>{row['漲跌幅']}</td><td>{row['第一低']}</td><td>{row['第二低']}</td><td>{row['第一高']}</td><td>{row['第二高']}</td></tr>"
     return html + "</table></div>"
+def render_tracking_table(data_list):
+    if not data_list: return "<div style='color: #666;'>無追蹤中標的</div>"
+    html = "<div style='overflow-x: auto;'><table style='width: 100%; border-collapse: collapse; font-size: 15px; text-align: center;'>"
+    html += "<tr style='background-color: #f0f2f6; border-bottom: 2px solid #ddd;'><th style='padding: 8px;'>進場日期</th><th style='padding: 8px;'>股票名稱</th><th style='padding: 8px;'>方向</th><th style='padding: 8px;'>進場成本</th><th style='padding: 8px;'>最新報價</th><th style='padding: 8px;'>當前損益</th></tr>"
+    for row in data_list:
+        html += f"<tr style='border-bottom: 1px solid #eee;'><td style='padding: 6px;'>{row['進場日期']}</td><td><b>{row['股票名稱']}</b></td><td>{row['方向']}</td><td>{row['進場成本']}</td><td>{row['最新報價']}</td><td>{row['當前損益']}</td></tr>"
+    return html + "</table></div>"
 
 def calculate_kline_score(df_stock):
     if len(df_stock) < 5: return 30, "<li>資料不足，給予基礎分 (+30)</li>"
@@ -332,7 +339,7 @@ elif page_mode == "🛡️ 實戰持股保鑣":
                     "進場成本": entry_p, "最新報價": current_p, "當前損益": ret_str
                 })
                 
-            st.markdown(render_html_table(display_list).replace("漲跌幅", "當前損益").replace("第一低", "方向").replace("第二低", "進場成本").replace("第一高", "最新報價").replace("<th style='padding: 8px;'>第二高</th>", ""), unsafe_allow_html=True)
+            st.markdown(render_tracking_table(display_list), unsafe_allow_html=True)
             
             st.write("---")
             target_name = st.selectbox("🛡️ 請選擇要進行【AI 防禦健檢】的標的：", active_stocks['股票名稱'].tolist())
